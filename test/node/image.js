@@ -1,6 +1,7 @@
 'use strict';
 
-const fs = require('fs');
+const assert = require('node:assert');
+const fs = require('node:fs');
 const request = require('../support/client');
 const getSetup = require('../support/setup');
 
@@ -23,6 +24,55 @@ describe('res.body', () => {
         (res.body.length - img.length).should.equal(0);
         done();
       });
+    });
+
+    it('should honor buffer(false)', (done) => {
+      request
+        .get(`${base}/image`)
+        .buffer(false)
+        .end((error, res) => {
+          try {
+            assert.ifError(error);
+            assert.strictEqual(res.buffered, false);
+            assert.deepEqual(res.body, {});
+            done();
+          } catch (err) {
+            done(err);
+          }
+        });
+    });
+
+    it('should not double-callback when maxResponseSize is exceeded', (done) => {
+      const warns = [];
+      const { warn } = console;
+      console.warn = function (...args) {
+        warns.push(args.join(' '));
+      };
+
+      request
+        .get(`${base}/image`)
+        .maxResponseSize(1)
+        .end((error) => {
+          // Late parser/error events fire after the first callback.
+          setImmediate(() => {
+            console.warn = warn;
+            try {
+              assert.equal(
+                error && error.message,
+                'Maximum response size reached'
+              );
+              assert.equal(error && error.code, 'ETOOLARGE');
+              assert.equal(
+                warns.some((line) => /double callback/.test(line)),
+                false,
+                `unexpected warning(s): ${warns.join('; ')}`
+              );
+              done();
+            } catch (err) {
+              done(err);
+            }
+          });
+        });
     });
   });
   describe('application/octet-stream', () => {

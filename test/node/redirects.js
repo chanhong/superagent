@@ -1,7 +1,6 @@
 'use strict';
 
-const URL = require('url');
-const assert = require('assert');
+const assert = require('node:assert');
 const getSetup = require('../support/setup');
 const request = require('../support/client');
 
@@ -71,6 +70,47 @@ describe('request', () => {
       });
     });
 
+    it('should overwrite previously set cookie during a redirect when agent is used', (done) => {
+      const agent = request.agent();
+      agent.get(`${base}/set-cookie`).end((error) => {
+        assert.ifError(error);
+        agent
+          .get(`${base}/cookie-redirect`)
+          .redirects(1)
+          .end((error, res) => {
+            try {
+              assert.ifError(error);
+              assert(/replaced=yes/.test(res.text), 'replaced=yes');
+              done();
+            } catch (err) {
+              done(err);
+            }
+          });
+      });
+    });
+
+    it('should retain a redirect cookie for its source host only', () => {
+      const agent = request.agent();
+      const source = new URL(base);
+      source.hostname = 'source.local';
+      const destination = new URL(base);
+      destination.hostname = 'destination.local';
+
+      return agent
+        .get(`${source.origin}/cross-host-cookie-redirect`)
+        .query({ destination: `${destination.origin}/show-cookies` })
+        .connect('127.0.0.1')
+        .then((res) => {
+          assert(!/origin=true/.test(res.text));
+          return agent
+            .get(`${source.origin}/show-cookies`)
+            .connect('127.0.0.1');
+        })
+        .then((res) => {
+          assert(/origin=true/.test(res.text));
+        });
+    });
+
     it('should follow Location', (done) => {
       const redirects = [];
 
@@ -93,7 +133,7 @@ describe('request', () => {
 
     it('should follow Location with IP override', () => {
       const redirects = [];
-      const url = URL.parse(base);
+      const url = new URL(base);
       return request
         .get(`http://redir.example.com:${url.port || '80'}${url.pathname}`)
         .connect({
@@ -111,7 +151,7 @@ describe('request', () => {
 
     it('should follow Location with IP:port override', () => {
       const redirects = [];
-      const url = URL.parse(base);
+      const url = new URL(base);
       return request
         .get(`http://redir.example.com:9999${url.pathname}`)
         .connect({

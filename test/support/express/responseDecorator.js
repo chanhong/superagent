@@ -303,7 +303,7 @@ function setMethods(res) {
    */
 
   res.sendStatus = function sendStatus(statusCode) {
-    const body = statuses[statusCode] || String(statusCode);
+    const body = statuses(statusCode) || String(statusCode);
 
     this.statusCode = statusCode;
     this.type('txt');
@@ -628,9 +628,7 @@ function setMethods(res) {
 
   res.set = res.header = function header(field, value_) {
     if (arguments.length === 2) {
-      let value = Array.isArray(value_)
-        ? value_.map((v) => String(v))
-        : String(value_);
+      let value = Array.isArray(value_) ? value_.map(String) : String(value_);
 
       // add charset to content-type
       if (field.toLowerCase() === 'content-type') {
@@ -799,14 +797,14 @@ function setMethods(res) {
     // Support text/{plain,html} by default
     this.format({
       text() {
-        body = statuses[status] + '. Redirecting to ' + address;
+        body = statuses(status) + '. Redirecting to ' + address;
       },
 
       html() {
         const u = escapeHtml(address);
         body =
           '<p>' +
-          statuses[status] +
+          statuses(status) +
           '. Redirecting to <a href="' +
           u +
           '">' +

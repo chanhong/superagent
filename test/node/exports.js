@@ -9,7 +9,8 @@ describe('exports', () => {
   it('should expose .serialize', () => {
     Object.keys(request.serialize).should.eql([
       'application/x-www-form-urlencoded',
-      'application/json'
+      'application/json',
+      'application/csp-report'
     ]);
   });
 
@@ -18,6 +19,7 @@ describe('exports', () => {
       'application/x-www-form-urlencoded',
       'application/json',
       'text',
+      'application/json-seq',
       'application/octet-stream',
       'application/pdf',
       'image'

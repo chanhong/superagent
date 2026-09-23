@@ -36,8 +36,21 @@ app.get('/binary', (request_, res) => {
     res.send(buf);
   });
 });
+
+app.get('/binary-brotli', (request_, res) => {
+  zlib.brotliCompress(subject, (error, buf) => {
+    res.set('Content-Encoding', 'br');
+    res.send(buf);
+  });
+});
+
 app.get('/corrupt', (request_, res) => {
   res.set('Content-Encoding', 'gzip');
+  res.send('blah');
+});
+
+app.get('/corrupt-brotli', (request_, res) => {
+  res.set('Content-Encoding', 'br');
   res.send('blah');
 });
 
@@ -45,6 +58,13 @@ app.get('/nocontent', (request_, res, next) => {
   res.statusCode = 204;
   res.set('Content-Type', 'text/plain');
   res.set('Content-Encoding', 'gzip');
+  res.send('');
+});
+
+app.get('/nocontent-brotli', (request_, res, next) => {
+  res.statusCode = 204;
+  res.set('Content-Type', 'text/plain');
+  res.set('Content-Encoding', 'br');
   res.send('');
 });
 
@@ -65,10 +85,27 @@ app.get('/junk', (request_, res) => {
   });
 });
 
+app.get('/junk-brotli', (request_, res) => {
+  zlib.brotliCompress(subject, (error, buf) => {
+    res.set('Content-Type', 'text/plain');
+    res.set('Content-Encoding', 'br');
+    res.write(buf);
+    res.end(' 0 junk');
+  });
+});
+
 app.get('/chopped', (request_, res) => {
   zlib.deflate(`${subject}123456`, (error, buf) => {
     res.set('Content-Type', 'text/plain');
     res.set('Content-Encoding', 'gzip');
+    res.send(buf.slice(0, -1));
+  });
+});
+
+app.get('/chopped-brotli', (request_, res) => {
+  zlib.brotliCompress(`${subject}123456`, (error, buf) => {
+    res.set('Content-Type', 'text/plain');
+    res.set('Content-Encoding', 'br');
     res.send(buf.slice(0, -1));
   });
 });
@@ -84,22 +121,47 @@ describe('zlib', () => {
   });
 
   it('should protect from zip bombs', (done) => {
+    const warns = [];
+    const { warn } = console;
+    console.warn = function (...args) {
+      warns.push(args.join(' '));
+    };
+
     request
       .get(base)
       .buffer(true)
       .maxResponseSize(1)
-      .end((error, res) => {
-        try {
-          assert.equal('Maximum response size reached', error && error.message);
-          done();
-        } catch (err) {
-          done(err);
-        }
+      .end((error) => {
+        setImmediate(() => {
+          console.warn = warn;
+          try {
+            assert.equal(
+              'Maximum response size reached',
+              error && error.message
+            );
+            assert.equal(
+              warns.some((line) => /double callback/.test(line)),
+              false,
+              `unexpected warning(s): ${warns.join('; ')}`
+            );
+            done();
+          } catch (err) {
+            done(err);
+          }
+        });
       });
   });
 
   it('should ignore trailing junk', (done) => {
     request.get(`${base}/junk`).end((error, res) => {
+      res.should.have.status(200);
+      res.text.should.equal(subject);
+      done();
+    });
+  });
+
+  it('should ignore trailing junk-brotli', (done) => {
+    request.get(`${base}/junk-brotli`).end((error, res) => {
       res.should.have.status(200);
       res.text.should.equal(subject);
       done();
@@ -115,10 +177,26 @@ describe('zlib', () => {
     });
   });
 
+  it('should ignore missing brotli data', (done) => {
+    request.get(`${base}/chopped-brotli`).end((error, res) => {
+      assert.equal(undefined, error);
+      res.should.have.status(200);
+      res.text.should.startWith(subject);
+      done();
+    });
+  });
+
   it('should handle corrupted responses', (done) => {
     request.get(`${base}/corrupt`).end((error, res) => {
       assert(error, 'missing error');
       assert(!res, 'response should not be defined');
+      done();
+    });
+  });
+
+  it('should handle brotli corrupted responses', (done) => {
+    request.get(`${base}/corrupt-brotli`).end((error, res) => {
+      res.text.should.equal('');
       done();
     });
   });
@@ -134,10 +212,33 @@ describe('zlib', () => {
     });
   });
 
+  it('should handle no content with gzip header', (done) => {
+    request.get(`${base}/nocontent-brotli`).end((error, res) => {
+      assert.ifError(error);
+      assert(res);
+      res.should.have.status(204);
+      res.text.should.equal('');
+      res.headers.should.not.have.property('content-length');
+      done();
+    });
+  });
+
   describe('without encoding set', () => {
     it('should buffer if asked', () => {
       return request
         .get(`${base}/binary`)
+        .buffer(true)
+        .then((res) => {
+          res.should.have.status(200);
+          assert(res.headers['content-length']);
+          assert(res.body.byteLength);
+          assert.equal(subject, res.body.toString());
+        });
+    });
+
+    it('should buffer Brotli if asked', () => {
+      return request
+        .get(`${base}/binary-brotli`)
         .buffer(true)
         .then((res) => {
           res.should.have.status(200);

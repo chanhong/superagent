@@ -208,7 +208,17 @@ describe('req.query(Object)', () => {
       res.body.should.eql({ name: 'tobi' });
       done();
     });
+    request_.on('error', (err) => {
+      done(err);
+    });
 
-    stream.pipe(request_);
+    stream.on('error', (err) => {
+      done(err);
+    });
+
+    // wait until stream is valid before piping
+    stream.on('open', () => {
+      stream.pipe(request_);
+    });
   });
 });

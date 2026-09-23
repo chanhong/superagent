@@ -1,9 +1,7 @@
-const semver = require('semver');
-
 /**
  * Module of mixed-in functions shared between node and client code
  */
-const { isObject, hasOwn } = require('./utils');
+const { isObject, hasOwn, isSafeKey } = require('./utils');
 
 /**
  * Expose `RequestBase`.
@@ -199,8 +197,8 @@ RequestBase.prototype._shouldRetry = function (error, res) {
       if (override === true) return true;
       if (override === false) return false;
       // undefined falls back to defaults
-    } catch (error_) {
-      console.error(error_);
+    } catch (err) {
+      console.error(err);
     }
   }
 
@@ -266,7 +264,9 @@ RequestBase.prototype.then = function (resolve, reject) {
 
     this._fullfilledPromise = new Promise((resolve, reject) => {
       self.on('abort', () => {
-        if (this._maxRetries && this._maxRetries > this._retries) {
+        // Timeouts abort the current attempt before retrying; an explicit
+        // abort must still reject even when attempts remain.
+        if (this.timedout && this._maxRetries && this._maxRetries > this._retries) {
           return;
         }
 
@@ -292,8 +292,8 @@ RequestBase.prototype.then = function (resolve, reject) {
   return this._fullfilledPromise.then(resolve, reject);
 };
 
-RequestBase.prototype.catch = function (cb) {
-  return this.then(undefined, cb);
+RequestBase.prototype.catch = function (callback) {
+  return this.then(undefined, callback);
 };
 
 /**
@@ -305,9 +305,9 @@ RequestBase.prototype.use = function (fn) {
   return this;
 };
 
-RequestBase.prototype.ok = function (cb) {
-  if (typeof cb !== 'function') throw new Error('Callback required');
-  this._okCallback = cb;
+RequestBase.prototype.ok = function (callback) {
+  if (typeof callback !== 'function') throw new Error('Callback required');
+  this._okCallback = callback;
   return this;
 };
 
@@ -460,7 +460,10 @@ RequestBase.prototype.field = function (name, value, options) {
     value = String(value);
   }
 
-  this._getFormData().append(name, value, options);
+  // fix https://github.com/ladjs/superagent/issues/1680
+  if (options) this._getFormData().append(name, value, options);
+  else this._getFormData().append(name, value);
+
   return this;
 };
 
@@ -478,32 +481,6 @@ RequestBase.prototype.abort = function () {
   this._aborted = true;
   if (this.xhr) this.xhr.abort(); // browser
   if (this.req) {
-    // Node v13 has major differences in `abort()`
-    // https://github.com/nodejs/node/blob/v12.x/lib/internal/streams/end-of-stream.js
-    // https://github.com/nodejs/node/blob/v13.x/lib/internal/streams/end-of-stream.js
-    // https://github.com/nodejs/node/blob/v14.x/lib/internal/streams/end-of-stream.js
-    // (if you run a diff across these you will see the differences)
-    //
-    // References:
-    // <https://github.com/nodejs/node/issues/31630>
-    // <https://github.com/visionmedia/superagent/pull/1084/commits/dc18679a7c5ccfc6046d882015e5126888973bc8>
-    //
-    // Thanks to @shadowgate15 and @niftylettuce
-    if (
-      semver.gte(process.version, 'v13.0.0') &&
-      semver.lt(process.version, 'v14.0.0')
-    ) {
-      // Note that the reason this doesn't work is because in v13 as compared to v14
-      // there is no `callback = nop` set in end-of-stream.js above
-      throw new Error(
-        'Superagent does not work in v13 properly with abort() due to Node.js core changes'
-      );
-    } else if (semver.gte(process.version, 'v14.0.0')) {
-      // We have to manually set `destroyed` to `true` in order for this to work
-      // (see core internals of end-of-stream.js above in v14 branch as compared to v12)
-      this.req.destroyed = true;
-    }
-
     this.req.abort(); // node
   }
 
@@ -540,7 +517,8 @@ RequestBase.prototype._auth = function (user, pass, options, base64Encoder) {
  * using "Access-Control-Allow-Origin" with a wildcard,
  * and also must set "Access-Control-Allow-Credentials"
  * to "true".
- *
+ * @param {Boolean} [on=true] - Set 'withCredentials' state
+ * @return {Request} for chaining
  * @api public
  */
 
@@ -662,9 +640,26 @@ RequestBase.prototype.send = function (data) {
   // merge
   if (isObject_ && isObject(this._data)) {
     for (const key in data) {
-      if (hasOwn(data, key)) this._data[key] = data[key];
+      if (typeof data[key] == 'bigint' && !data[key].toJSON)
+        throw new Error('Cannot serialize BigInt value to json');
+      if (!hasOwn(data, key)) continue;
+      if (isSafeKey(key)) {
+        this._data[key] = data[key];
+      } else {
+        // an own "__proto__" key (e.g. from JSON.parse of untrusted input)
+        // must become a plain own property of the payload rather than
+        // replacing the payload's prototype and vanishing from the body
+        Object.defineProperty(this._data, key, {
+          value: data[key],
+          enumerable: true,
+          writable: true,
+          configurable: true
+        });
+      }
     }
-  } else if (typeof data === 'string') {
+  }
+  else if (typeof data === 'bigint') throw new Error("Cannot send value of type BigInt");
+  else if (typeof data === 'string') {
     // default to x-www-form-urlencoded
     if (!type) this.type('form');
     type = this._header['content-type'];

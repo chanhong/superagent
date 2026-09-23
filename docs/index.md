@@ -1,4 +1,3 @@
-
 # SuperAgent
 
 SuperAgent is light-weight progressive ajax API crafted for flexibility, readability, and a low learning curve after being frustrated with many of the existing request APIs. It also works with Node.js!
@@ -14,15 +13,17 @@ SuperAgent is light-weight progressive ajax API crafted for flexibility, readabi
        });
 ```
 
+
 ## Test documentation
 
-[**中文文档**](docs/zh_CN/index.html)
+[**中文文档**](./zh_CN/index.md) | [**한국어**](./ko_KR/index.md)
 
 The following [test documentation](docs/test.html) was generated with [Mocha's](https://mochajs.org/) "doc" reporter, and directly reflects the test suite. This provides an additional source of documentation.
 
+
 ## Request basics
 
-A request can be initiated by invoking the appropriate method on the `request` object, then calling `.then()` (or `.end()` [or `await`](#promise-and-generator-support)) to send the request. For example a simple __GET__ request:
+A request can be initiated by invoking the appropriate method on the `request` object, then calling `.then()` (or `.end()` [or `await`](#promise-and-generator-support)) to send the request. For example a simple **GET** request:
 
 ```javascript
      request
@@ -59,7 +60,7 @@ Absolute URLs can be used. In web browsers absolute URLs work only if the server
        });
 ```
 
-The __Node__ client supports making requests to [Unix Domain Sockets](https://en.wikipedia.org/wiki/Unix_domain_socket):
+The **Node** client supports making requests to [Unix Domain Sockets](https://en.wikipedia.org/wiki/Unix_domain_socket):
 
 ```javascript
     // pattern: https?+unix://SOCKET_PATH/REQUEST_PATH
@@ -73,7 +74,7 @@ The __Node__ client supports making requests to [Unix Domain Sockets](https://en
     }
 ```
 
-__DELETE__, __HEAD__, __PATCH__, __POST__, and __PUT__ requests can also be used, simply change the method name:
+**DELETE**, **HEAD**, **PATCH**, **POST**, and **PUT** requests can also be used, simply change the method name:
 
 ```javascript
     request
@@ -83,15 +84,28 @@ __DELETE__, __HEAD__, __PATCH__, __POST__, and __PUT__ requests can also be used
       });
 ```
 
-__DELETE__ can be also called as `.del()` for compatibility with old IE where `delete` is a reserved word.
+**DELETE** can be also called as `.del()` for compatibility with old IE where `delete` is a reserved word.
 
-The HTTP method defaults to __GET__, so if you wish, the following is valid:
+The HTTP method defaults to **GET**, so if you wish, the following is valid:
 
 ```javascript
      request('/search', (err, res) => {
 
      });
 ```
+
+
+## Using HTTP/2
+
+To make a request using HTTP/2 protocol only (with no HTTP/1.x fallback), use the `.http2()` method.
+
+```javascript
+    const request = require('superagent');
+    const res = await request
+      .get('https://example.com/h2')
+      .http2();
+```
+
 
 ## Setting header fields
 
@@ -114,9 +128,10 @@ You may also pass an object to set several fields in a single call:
        .then(callback);
 ```
 
+
 ## `GET` requests
 
-The `.query()` method accepts objects, which when used with the __GET__ method will form a query-string. The following will produce the path `/search?query=Manny&range=1..5&order=desc`.
+The `.query()` method accepts objects, which when used with the **GET** method will form a query-string. The following will produce the path `/search?query=Manny&range=1..5&order=desc`.
 
 ```javascript
      request
@@ -163,6 +178,7 @@ Or joined:
         });
 ```
 
+
 ## `HEAD` requests
 
 You can also use the `.query()` method for HEAD requests. The following will produce the path `/users?email=joe@smith.com`.
@@ -176,9 +192,10 @@ You can also use the `.query()` method for HEAD requests. The following will pro
         });
 ```
 
+
 ## `POST` / `PUT` requests
 
-A typical JSON __POST__ request might look a little like the following, where we set the Content-Type header field appropriately, and "write" some data, in this case just a JSON string.
+A typical JSON **POST** request might look a little like the following, where we set the Content-Type header field appropriately, and "write" some data, in this case just a JSON string.
 
 ```javascript
       request.post('/user')
@@ -188,7 +205,7 @@ A typical JSON __POST__ request might look a little like the following, where we
         .catch(errorCallback)
 ```
 
-Since JSON is undoubtedly the most common, it's the _default_! The following example is equivalent to the previous.
+Since JSON is undoubtedly the most common, it's the *default*! The following example is equivalent to the previous.
 
 ```javascript
       request.post('/user')
@@ -206,7 +223,7 @@ Or using multiple `.send()` calls:
 ```
 
 By default sending strings will set the `Content-Type` to `application/x-www-form-urlencoded`,
-  multiple calls will be concatenated with `&`, here resulting in `name=tj&pet=tobi`:
+multiple calls will be concatenated with `&`, here resulting in `name=tj&pet=tobi`:
 
 ```javascript
       request.post('/user')
@@ -215,7 +232,7 @@ By default sending strings will set the `Content-Type` to `application/x-www-for
         .then(callback, errorCallback);
 ```
 
-SuperAgent formats are extensible, however by default "json" and "form" are supported. To send the data as `application/x-www-form-urlencoded` simply invoke `.type()` with "form", where the default is "json". This request will __POST__ the body "name=tj&pet=tobi".
+SuperAgent formats are extensible, however by default "json" and "form" are supported. To send the data as `application/x-www-form-urlencoded` simply invoke `.type()` with "form", where the default is "json". This request will **POST** the body "name=tj\&pet=tobi".
 
 ```javascript
       request.post('/user')
@@ -225,13 +242,14 @@ SuperAgent formats are extensible, however by default "json" and "form" are supp
         .then(callback, errorCallback)
 ```
 
-Sending a [`FormData`](https://developer.mozilla.org/en-US/docs/Web/API/FormData/FormData) object is also supported. The following example will __POST__ the content of the HTML form identified by id="myForm":
+Sending a [`FormData`](https://developer.mozilla.org/en-US/docs/Web/API/FormData/FormData) object is also supported. The following example will **POST** the content of the HTML form identified by id="myForm":
 
 ```javascript
       request.post('/user')
         .send(new FormData(document.getElementById('myForm')))
         .then(callback, errorCallback)
 ```
+
 
 ## Setting the `Content-Type`
 
@@ -257,6 +275,7 @@ simply the extension name such as "xml", "json", "png", etc:
        .type('png')
 ```
 
+
 ## Serializing request body
 
 SuperAgent will automatically serialize JSON and forms.
@@ -270,6 +289,7 @@ request.serialize['application/xml'] = function (obj) {
 // going forward, all requests with a Content-type of
 // 'application/xml' will be automatically serialized
 ```
+
 If you want to send the payload in a custom format, you can replace
 the built-in serialization with the `.serialize()` method on a per-request basis:
 
@@ -281,6 +301,8 @@ request
         return 'string generated from obj';
     });
 ```
+
+
 ## Retrying requests
 
 When given the `.retry()` method, SuperAgent will automatically retry requests, if they fail in a way that is transient or could be due to a flaky Internet connection.
@@ -324,6 +346,7 @@ By default the following error codes are retried:
 * `'ENETUNREACH'`
 * `'EAI_AGAIN'`
 
+
 ## Setting Accept
 
 In a similar fashion to the `.type()` method it is also possible to set the `Accept` header via the short hand method `.accept()`. Which references `request.types` as well allowing you to specify either the full canonicalized MIME type name as `type/subtype`, or the extension suffix form as "xml", "json", "png", etc. for convenience:
@@ -341,11 +364,12 @@ In a similar fashion to the `.type()` method it is also possible to set the `Acc
 
 ### Facebook and Accept JSON
 
-If you are calling Facebook's API, be sure to send an `Accept: application/json` header in your request. If you don't do this, Facebook will respond with `Content-Type: text/javascript; charset=UTF-8`, which SuperAgent will not parse and thus `res.body` will be undefined. You can do this with either `req.accept('json')` or `req.set('Accept', 'application/json')`. See [issue 1078](https://github.com/visionmedia/superagent/issues/1078) for details.
+If you are calling Facebook's API, be sure to send an `Accept: application/json` header in your request. If you don't do this, Facebook will respond with `Content-Type: text/javascript; charset=UTF-8`, which SuperAgent will not parse and thus `res.body` will be undefined. You can do this with either `req.accept('json')` or `req.set('Accept', 'application/json')`. See [issue 1078](https://github.com/ladjs/superagent/issues/1078) for details.
+
 
 ## Query strings
 
-  `req.query(obj)` is a method which may be used to build up a query-string. For example populating `?format=json&dest=/login` on a __POST__:
+`req.query(obj)` is a method which may be used to build up a query-string. For example populating `?format=json&dest=/login` on a **POST**:
 
 ```javascript
     request
@@ -374,15 +398,16 @@ By default the query string is not assembled in any particular order. An asciibe
    .then(callback)
 ```
 
+
 ## TLS options
 
 In Node.js SuperAgent supports methods to configure HTTPS requests:
 
-- `.ca()`: Set the CA certificate(s) to trust
-- `.cert()`: Set the client certificate chain(s)
-- `.key()`: Set the client private key(s)
-- `.pfx()`: Set the client PFX or PKCS12 encoded private key and certificate chain
-- `.disableTLSCerts()`: Does not reject expired or invalid TLS certs. Sets internally `rejectUnauthorized=true`. *Be warned, this method allows MITM attacks.*
+* `.ca()`: Set the CA certificate(s) to trust
+* `.cert()`: Set the client certificate chain(s)
+* `.key()`: Set the client private key(s)
+* `.pfx()`: Set the client PFX or PKCS12 encoded private key and certificate chain
+* `.disableTLSCerts()`: Does not reject expired or invalid TLS certs. Sets internally `rejectUnauthorized=true`. *Be warned, this method allows MITM attacks.*
 
 For more information, see Node.js [https.request docs](https://nodejs.org/api/https.html#https_https_request_options_callback).
 
@@ -405,6 +430,7 @@ request
   .ca(ca)
   .then(res => {});
 ```
+
 
 ## Parsing response bodies
 
@@ -434,25 +460,27 @@ You can set a custom parser (that takes precedence over built-in parsers) with t
 
 ### JSON / Urlencoded
 
-The property `res.body` is the parsed object, for example if a request responded with the JSON string '{"user":{"name":"tobi"}}', `res.body.user.name` would be "tobi". Likewise the x-www-form-urlencoded value of "user[name]=tobi" would yield the same result. Only one level of nesting is supported. If you need more complex data, send JSON instead.
+The property `res.body` is the parsed object, for example if a request responded with the JSON string '{"user":{"name":"tobi"}}', `res.body.user.name` would be "tobi". Likewise the x-www-form-urlencoded value of "user\[name]=tobi" would yield the same result. Only one level of nesting is supported. If you need more complex data, send JSON instead.
 
 Arrays are sent by repeating the key. `.send({color: ['red','blue']})` sends `color=red&color=blue`. If you want the array keys to contain `[]` in their name, you must add it yourself, as SuperAgent doesn't add it automatically.
 
 ### Multipart
 
-The Node client supports _multipart/form-data_ via the [Formidable](https://github.com/felixge/node-formidable) module. When parsing multipart responses, the object `res.files` is also available to you. Suppose for example a request responds with the following multipart body:
+The Node client supports *multipart/form-data* via the [Formidable](https://github.com/felixge/node-formidable) module. When parsing multipart responses, the object `res.files` is also available to you. Suppose for example a request responds with the following multipart body:
 
-    --whoop
-    Content-Disposition: attachment; name="image"; filename="tobi.png"
-    Content-Type: image/png
+```
+--whoop
+Content-Disposition: attachment; name="image"; filename="tobi.png"
+Content-Type: image/png
 
-    ... data here ...
-    --whoop
-    Content-Disposition: form-data; name="name"
-    Content-Type: text/plain
+... data here ...
+--whoop
+Content-Disposition: form-data; name="name"
+Content-Type: text/plain
 
-    Tobi
-    --whoop--
+Tobi
+--whoop--
+```
 
 You would have the values `res.body.name` provided as "Tobi", and `res.files.image` as a `File` object containing the path on disk, filename, and other properties.
 
@@ -460,8 +488,8 @@ You would have the values `res.body.name` provided as "Tobi", and `res.files.ima
 
 In browsers, you may use `.responseType('blob')` to request handling of binary response bodies. This API is unnecessary when running in node.js. The supported argument values for this method are
 
-- `'blob'` passed through to the XmlHTTPRequest `responseType` property
-- `'arraybuffer'` passed through to the XmlHTTPRequest `responseType` property
+* `'blob'` passed through to the XmlHTTPRequest `responseType` property
+* `'arraybuffer'` passed through to the XmlHTTPRequest `responseType` property
 
 ```js
 req.get('/binary.data')
@@ -472,6 +500,7 @@ req.get('/binary.data')
 ```
 
 For more information, see the Mozilla Developer Network [xhr.responseType docs](https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/responseType).
+
 
 ## Response properties
 
@@ -521,17 +550,19 @@ The response status flags help determine if the request was a success, among oth
      res.forbidden = 403 == status;
 ```
 
+
 ## Aborting requests
 
 To abort requests simply invoke the `req.abort()` method.
+
 
 ## Timeouts
 
 Sometimes networks and servers get "stuck" and never respond after accepting a request. Set timeouts to avoid requests waiting forever.
 
-  * `req.timeout({deadline:ms})` or `req.timeout(ms)` (where `ms` is a number of milliseconds > 0) sets a deadline for the entire request (including all uploads, redirects, server processing time) to complete. If the response isn't fully downloaded within that time, the request will be aborted.
+* `req.timeout({deadline:ms})` or `req.timeout(ms)` (where `ms` is a number of milliseconds > 0) sets a deadline for the entire request (including all uploads, redirects, server processing time) to complete. If the response isn't fully downloaded within that time, the request will be aborted.
 
-  * `req.timeout({response:ms})` sets maximum time to wait for the first byte to arrive from the server, but it does not limit how long the entire download can take. Response timeout should be at least few seconds longer than just the time it takes the server to respond, because it also includes time to make DNS lookup, TCP/IP and TLS connections, and time to upload request data.
+* `req.timeout({response:ms})` sets maximum time to wait for the first byte to arrive from the server, but it does not limit how long the entire download can take. Response timeout should be at least few seconds longer than just the time it takes the server to respond, because it also includes time to make DNS lookup, TCP/IP and TLS connections, and time to upload request data.
 
 You should use both `deadline` and `response` timeouts. This way you can use a short response timeout to detect unresponsive networks quickly, and a long deadline to give time for downloads on slow, but reliable, networks. Note that both of these timers limit how long *uploads* of attached files are allowed to take. Use long timeouts if you're uploading files.
 
@@ -551,6 +582,7 @@ You should use both `deadline` and `response` timeouts. This way you can use a s
 
 Timeout errors have a `.timeout` property.
 
+
 ## Authentication
 
 In both Node and browsers auth available via the `.auth()` method:
@@ -562,7 +594,7 @@ In both Node and browsers auth available via the `.auth()` method:
       .then(callback);
 ```
 
-In the _Node_ client Basic auth can be in the URL as "user:pass":
+In the *Node* client Basic auth can be in the URL as "user:pass":
 
 ```javascript
     request.get('http://tobi:learnboost@local').then(callback);
@@ -580,6 +612,7 @@ The `auth` method also supports a `type` of `bearer`, to specify token-based aut
     request.auth('my_token', { type: 'bearer' })
 ```
 
+
 ## Following redirects
 
 By default up to 5 redirects will be followed, however you may specify this with the `res.redirects(n)` method:
@@ -590,7 +623,25 @@ By default up to 5 redirects will be followed, however you may specify this with
 
 Redirects exceeding the limit are treated as errors. Use `.ok(res => res.status < 400)` to read them as successful responses.
 
+Only `http:` and `https:` redirect targets are followed; a request made over a Unix domain socket may additionally be redirected within that same socket. A `Location` header pointing anywhere else (another socket, `file:`, `data:`, …) fails the request with an error whose `code` is `EUNSUPPORTEDREDIRECT`, and an unparseable `Location` header fails it with `EINVALIDREDIRECT`. In both cases `err.status` holds the redirect status and `err.location` the offending header value.
+
+When a redirect changes the origin (scheme, host or port), the `Authorization` and `Cookie` headers are dropped, including credentials given with `.auth(user, pass, { type: 'auto' })`; cookies are re-attached per host by [agents](#agents-for-global-state).
+
+
 ## Agents for global state
+
+### Custom Node.js HTTP agents
+
+For a Node.js request that needs a custom [`http.Agent`](https://nodejs.org/api/http.html#class-httpagent), such as a keep-alive agent, pass it to the request with `.agent()`. This is distinct from `request.agent()`, which creates a SuperAgent cookie jar and default-request settings.
+
+```javascript
+const http = require('http');
+const keepAliveAgent = new http.Agent({ keepAlive: true });
+
+request.get('https://example.com').agent(keepAliveAgent).then((res) => {
+  // handle response
+});
+```
 
 ### Saving cookies
 
@@ -607,6 +658,8 @@ In Node SuperAgent does not save cookies by default, but you can use the `.agent
 
 In browsers cookies are managed automatically by the browser, so the `.agent()` does not isolate cookies.
 
+The Node cookie jar only stores a cookie for the host that set it, or for a `Domain` attribute that host belongs to (RFC 6265); a server cannot plant cookies for an unrelated host or for a bare public suffix such as `com`.
+
 ### Default options for multiple requests
 
 Regular request methods called on the agent will be used as defaults for all requests made by that agent.
@@ -621,6 +674,7 @@ Regular request methods called on the agent will be used as defaults for all req
 ```
 
 The complete list of methods that the agent can use to set defaults is: `use`, `on`, `once`, `set`, `query`, `type`, `accept`, `auth`, `withCredentials`, `sortQuery`, `retry`, `ok`, `redirects`, `timeout`, `buffer`, `serialize`, `parse`, `ca`, `key`, `pfx`, `cert`.
+
 
 ## Piping data
 
@@ -648,7 +702,7 @@ Or piping the response to a file:
     req.pipe(stream);
 ```
 
- It's not possible to mix pipes and callbacks or promises. Note that you should **NOT** attempt to pipe the result of `.end()` or the `Response` object:
+It's not possible to mix pipes and callbacks or promises. Note that you should **NOT** attempt to pipe the result of `.end()` or the `Response` object:
 
 ```javascript
     // Don't do either of these:
@@ -664,11 +718,12 @@ Or piping the response to a file:
       .pipe(nope_its_too_late);
 ```
 
-In a [future version](https://github.com/visionmedia/superagent/issues/1188) of superagent, improper calls to `pipe()` will fail.
+In a [future version](https://github.com/ladjs/superagent/issues/1188) of superagent, improper calls to `pipe()` will fail.
+
 
 ## Multipart requests
 
-SuperAgent is also great for _building_ multipart requests for which it provides methods `.attach()` and `.field()`.
+SuperAgent is also great for *building* multipart requests for which it provides methods `.attach()` and `.field()`.
 
 When you use `.field()` or `.attach()` you can't use `.send()` and you *must not* set `Content-Type` (the correct type will be set for you).
 
@@ -676,9 +731,9 @@ When you use `.field()` or `.attach()` you can't use `.send()` and you *must not
 
 To send a file use `.attach(name, [file], [options])`. You can attach multiple files by calling `.attach` multiple times. The arguments are:
 
- * `name` — field name in the form.
- * `file` — either string with file path or `Blob`/`Buffer` object.
- * `options` — (optional) either string with custom file name or `{filename: string}` object. In Node also `{contentType: 'mime/type'}` is supported. In browser create a `Blob` with an appropriate type instead.
+* `name` — field name in the form.
+* `file` — either string with file path or `Blob`/`Buffer` object.
+* `options` — (optional) either string with custom file name or `{filename: string}` object. In Node also `{contentType: 'mime/type'}` is supported. In browser create a `Blob` with an appropriate type instead.
 
 <br>
 
@@ -705,9 +760,11 @@ Much like form fields in HTML, you can set field values with `.field(name, value
        .then(callback);
 ```
 
+
 ## Compression
 
 The node client supports compressed responses, best of all, you don't have to do anything! It just works.
+
 
 ## Buffering responses
 
@@ -715,11 +772,14 @@ To force buffering of response bodies as `res.text` you may invoke `req.buffer()
 
 When buffered the `res.buffered` flag is provided, you may use this to handle both buffered and unbuffered responses in the same callback.
 
+Buffered bodies are limited to 200 MB of *decompressed* data by default; use `req.maxResponseSize(bytes)` to change that limit. When it is exceeded the request fails with an error whose `code` is `ETOOLARGE`, and any decompression in progress is stopped. Unbuffered responses are streamed to you without accumulating anything, so the limit does not apply to them (nor to `.pipe()`); apply your own bounds when streaming from untrusted servers.
+
+
 ## CORS
 
-For security reasons, browsers will block cross-origin requests unless the server opts-in using CORS headers. Browsers will also make extra __OPTIONS__ requests to check what HTTP headers and methods are allowed by the server. [Read more about CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS).
+For security reasons, browsers will block cross-origin requests unless the server opts-in using CORS headers. Browsers will also make extra **OPTIONS** requests to check what HTTP headers and methods are allowed by the server. [Read more about CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS).
 
-The `.withCredentials()` method enables the ability to send cookies from the origin, however only when `Access-Control-Allow-Origin` is _not_ a wildcard ("*"), and `Access-Control-Allow-Credentials` is "true".
+The `.withCredentials()` method enables the ability to send cookies from the origin, however only when `Access-Control-Allow-Origin` is *not* a wildcard ("\*"), and `Access-Control-Allow-Credentials` is "true".
 
 ```javascript
     request
@@ -730,6 +790,7 @@ The `.withCredentials()` method enables the ability to send cookies from the ori
         assert.equal('tobi', res.text);
       })
 ```
+
 
 ## Error handling
 
@@ -781,6 +842,7 @@ Alternatively, you can use the `.ok(callback)` method to decide whether a respon
       })
 ```
 
+
 ## Progress tracking
 
 SuperAgent fires `progress` events on upload and download of large files.
@@ -799,6 +861,7 @@ SuperAgent fires `progress` events on upload and download of large files.
       })
       .then()
 ```
+
 
 ## Testing on localhost
 
@@ -836,6 +899,7 @@ It's generally safe to ignore broken HTTPS on `localhost`, because the loopback 
 
 We intentionally don't support disabling of HTTPS security when making requests to any other IP, because such options end up abused as a quick "fix" for HTTPS problems. You can get free HTTPS certificates from [Let's Encrypt](https://certbot.eff.org) or set your own CA (`.ca(ca_public_pem)`) to make your self-signed certificates trusted.
 
+
 ## Promise and Generator support
 
 SuperAgent's request is a "thenable" object that's compatible with JavaScript promises and the `async`/`await` syntax.
@@ -855,14 +919,17 @@ Libraries like [co](https://github.com/tj/co) or a web framework like [koa](http
     const res = yield req;
 ```
 
-Note that SuperAgent expects the global `Promise` object to be present. You'll need a polyfill to use promises in Internet Explorer or Node.js 0.10.
+Note that SuperAgent expects the global `Promise` object to be present. You'll need to use v7 and a polyfill to use promises in Internet Explorer or Node.js 0.10.
+
+We have dropped support in v8 for IE.  You must add a polyfill for WeakRef and BigInt if you wish to support Opera 85, iOS Safari 12.2-12.5, for example using <https://cdnjs.cloudflare.com/polyfill/>:
+
+```html
+<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=WeakRef,BigInt"></script>
+```
+
 
 ## Browser and node versions
 
 SuperAgent has two implementations: one for web browsers (using XHR) and one for Node.JS (using core http module). By default Browserify and WebPack will pick the browser version.
 
 If want to use WebPack to compile code for Node.JS, you *must* specify [node target](https://webpack.github.io/docs/configuration.html#target) in its configuration.
-
-### Using browser version in electron
-
-[Electron](https://electron.atom.io/) developers report if you would prefer to use the browser version of SuperAgent instead of the Node version, you can `require('superagent/superagent')`. Your requests will now show up in the Chrome developer tools Network tab. Note this environment is not covered by automated test suite and not officially supported.

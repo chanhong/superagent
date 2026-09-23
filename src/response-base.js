@@ -53,7 +53,7 @@ ResponseBase.prototype._setHeaderProperties = function (header) {
   // params
   const parameters = utils.params(ct);
   for (const key in parameters) {
-    if (Object.prototype.hasOwnProperty.call(parameters, key))
+    if (Object.prototype.hasOwnProperty.call(parameters, key) && !(key in this))
       this[key] = parameters[key];
   }
 
@@ -64,7 +64,7 @@ ResponseBase.prototype._setHeaderProperties = function (header) {
     if (header.link) {
       this.links = utils.parseLinks(header.link);
     }
-  } catch {
+  } catch (err) {
     // ignore
   }
 };

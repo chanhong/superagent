@@ -4,25 +4,30 @@
 
 const { StringDecoder } = require('string_decoder');
 const Stream = require('stream');
-const zlib = require('zlib');
+const { chooseDecompresser } = require('./decompress');
 
 /**
- * Buffers response data events and re-emits when they're unzipped.
+ * Buffers response data events and re-emits when they're decompressed.
+ *
+ * Returns the decompression stream so the caller can destroy it (for example
+ * when a decompression bomb exceeds the maximum response size).
  *
  * @param {Request} req
  * @param {Response} res
+ * @return {zlib.Unzip|zlib.BrotliDecompress}
  * @api private
  */
 
-exports.unzip = (request, res) => {
-  const unzip = zlib.createUnzip();
+exports.decompress = (request, res) => {
+  const decompresser = chooseDecompresser(res);
+
   const stream = new Stream();
   let decoder;
 
   // make node responseOnEnd() happy
   stream.req = request;
 
-  unzip.on('error', (error) => {
+  decompresser.on('error', (error) => {
     if (error && error.code === 'Z_BUF_ERROR') {
       // unexpected end of file is ignored by browsers and curl
       stream.emit('end');
@@ -33,7 +38,7 @@ exports.unzip = (request, res) => {
   });
 
   // pipe to unzip
-  res.pipe(unzip);
+  res.pipe(decompresser);
 
   // override `setEncoding` to capture encoding
   res.setEncoding = (type) => {
@@ -41,7 +46,8 @@ exports.unzip = (request, res) => {
   };
 
   // decode upon decompressing with captured encoding
-  unzip.on('data', (buf) => {
+  decompresser.on('data', (buf) => {
+    if (decompresser.destroyed) return;
     if (decoder) {
       const string_ = decoder.write(buf);
       if (string_.length > 0) stream.emit('data', string_);
@@ -50,7 +56,7 @@ exports.unzip = (request, res) => {
     }
   });
 
-  unzip.on('end', () => {
+  decompresser.on('end', () => {
     stream.emit('end');
   });
 
@@ -68,4 +74,6 @@ exports.unzip = (request, res) => {
 
     return this;
   };
+
+  return decompresser;
 };

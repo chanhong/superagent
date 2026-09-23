@@ -1,7 +1,11 @@
+const fs = require('fs');
+
 const assert = require('assert');
 const getSetup = require('./support/setup');
 
 const request = require('./support/client');
+
+const binData = fs.readFileSync(`${__dirname}/node/fixtures/test.aac`);
 
 describe('request', function () {
   let setup;
@@ -630,6 +634,21 @@ describe('request', function () {
       });
   });
 
+  it('GET binary data', (next) => {
+    request
+      .get(`${uri}/binary-data`)
+      .buffer()
+      .end((error, res) => {
+        try {
+          assert.ifError(error);
+          assert.deepEqual(res.body, binData);
+          next();
+        } catch (err) {
+          next(err);
+        }
+      });
+  });
+
   it('GET x-www-form-urlencoded', (next) => {
     request.get(`${uri}/foo`).end((error, res) => {
       try {
@@ -958,9 +977,9 @@ describe('request', function () {
   it('req.toJSON()', (next) => {
     request.get(`${uri}/ok`).end((error, res) => {
       try {
-        const j = (res.request || res.req).toJSON();
-        for (const prop of ['url', 'method', 'data', 'headers']) {
-          assert(j.hasOwnProperty(prop));
+        const index = (res.request || res.req).toJSON();
+        for (const property of ['url', 'method', 'data', 'headers']) {
+          assert(index.hasOwnProperty(property));
         }
 
         next();

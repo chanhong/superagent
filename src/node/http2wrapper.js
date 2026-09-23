@@ -1,17 +1,8 @@
+const http2 = require('http2');
 const Stream = require('stream');
-const util = require('util');
 const net = require('net');
 const tls = require('tls');
-// eslint-disable-next-line node/no-deprecated-api
-const { parse } = require('url');
-const process = require('process');
-const semverGte = require('semver/functions/gte');
-
-let http2;
-
-if (semverGte(process.version, 'v10.10.0')) http2 = require('http2');
-else
-  throw new Error('superagent: this version of Node.js does not support http2');
+const { isSafeKey } = require('../utils');
 
 const {
   HTTP2_HEADER_PATH,
@@ -31,171 +22,197 @@ function setProtocol(protocol) {
   };
 }
 
-function Request(protocol, options) {
-  Stream.call(this);
-  const defaultPort = protocol === 'https:' ? 443 : 80;
-  const defaultHost = 'localhost';
-  const port = options.port || defaultPort;
-  const host = options.host || defaultHost;
-
-  delete options.port;
-  delete options.host;
-
-  this.method = options.method;
-  this.path = options.path;
-  this.protocol = protocol;
-  this.host = host;
-
-  delete options.method;
-  delete options.path;
-
-  const sessionOptions = { ...options };
-  if (options.socketPath) {
-    sessionOptions.socketPath = options.socketPath;
-    sessionOptions.createConnection = this.createUnixConnection.bind(this);
-  }
-
-  this._headers = {};
-
-  const session = http2.connect(`${protocol}//${host}:${port}`, sessionOptions);
-  this.setHeader('host', `${host}:${port}`);
-
-  session.on('error', (error) => this.emit('error', error));
-
-  this.session = session;
+function normalizeIpv6Host(host) {
+  return net.isIP(host) === 6 ? `[${host}]` : host;
 }
 
-/**
- * Inherit from `Stream` (which inherits from `EventEmitter`).
- */
-util.inherits(Request, Stream);
+class Request extends Stream {
+  constructor(protocol, options) {
+    super();
+    const defaultPort = protocol === 'https:' ? 443 : 80;
+    const defaultHost = 'localhost';
+    const port = options.port || defaultPort;
+    const host = options.host || defaultHost;
 
-Request.prototype.createUnixConnection = function (authority, options) {
-  switch (this.protocol) {
-    case 'http:':
-      return net.connect(options.socketPath);
-    case 'https:':
-      options.ALPNProtocols = ['h2'];
-      options.servername = this.host;
-      options.allowHalfOpen = true;
-      return tls.connect(options.socketPath, options);
-    default:
-      throw new Error('Unsupported protocol', this.protocol);
-  }
-};
+    delete options.port;
+    delete options.host;
 
-// eslint-disable-next-line no-unused-vars
-Request.prototype.setNoDelay = function (bool) {
-  // We can not use setNoDelay with HTTP/2.
-  // Node 10 limits http2session.socket methods to ones safe to use with HTTP/2.
-  // See also https://nodejs.org/api/http2.html#http2_http2session_socket
-};
+    this.method = options.method;
+    this.path = options.path;
+    this.protocol = protocol;
+    this.host = host;
 
-Request.prototype.getFrame = function () {
-  if (this.frame) {
-    return this.frame;
-  }
+    delete options.method;
+    delete options.path;
 
-  const method = {
-    [HTTP2_HEADER_PATH]: this.path,
-    [HTTP2_HEADER_METHOD]: this.method
-  };
-
-  let headers = this.mapToHttp2Header(this._headers);
-
-  headers = Object.assign(headers, method);
-
-  const frame = this.session.request(headers);
-  // eslint-disable-next-line no-unused-vars
-  frame.once('response', (headers, flags) => {
-    headers = this.mapToHttpHeader(headers);
-    frame.headers = headers;
-    frame.statusCode = headers[HTTP2_HEADER_STATUS];
-    frame.status = frame.statusCode;
-    this.emit('response', frame);
-  });
-
-  this._headerSent = true;
-
-  frame.once('drain', () => this.emit('drain'));
-  frame.on('error', (error) => this.emit('error', error));
-  frame.on('close', () => this.session.close());
-
-  this.frame = frame;
-  return frame;
-};
-
-Request.prototype.mapToHttpHeader = function (headers) {
-  const keys = Object.keys(headers);
-  const http2Headers = {};
-  for (let key of keys) {
-    let value = headers[key];
-    key = key.toLowerCase();
-    switch (key) {
-      case HTTP2_HEADER_SET_COOKIE:
-        value = Array.isArray(value) ? value : [value];
-        break;
-      default:
-        break;
+    const sessionOptions = { ...options };
+    if (options.socketPath) {
+      sessionOptions.socketPath = options.socketPath;
+      sessionOptions.createConnection = this.createUnixConnection.bind(this);
     }
 
-    http2Headers[key] = value;
+    this._headers = {};
+
+    const normalizedHost = normalizeIpv6Host(host);
+    const session = http2.connect(
+      `${protocol}//${normalizedHost}:${port}`,
+      sessionOptions
+    );
+    this.setHeader('host', `${normalizedHost}:${port}`);
+
+    session.on('error', (error) => this.emit('error', error));
+
+    this.session = session;
   }
 
-  return http2Headers;
-};
-
-Request.prototype.mapToHttp2Header = function (headers) {
-  const keys = Object.keys(headers);
-  const http2Headers = {};
-  for (let key of keys) {
-    let value = headers[key];
-    key = key.toLowerCase();
-    switch (key) {
-      case HTTP2_HEADER_HOST:
-        key = HTTP2_HEADER_AUTHORITY;
-        value = /^http:\/\/|^https:\/\//.test(value)
-          ? parse(value).host
-          : value;
-        break;
+  createUnixConnection(authority, options) {
+    switch (this.protocol) {
+      case 'http:':
+        return net.connect(options.socketPath);
+      case 'https:':
+        options.ALPNProtocols = ['h2'];
+        options.servername = this.host;
+        options.allowHalfOpen = true;
+        return tls.connect(options.socketPath, options);
       default:
-        break;
+        throw new Error('Unsupported protocol', this.protocol);
+    }
+  }
+
+  setNoDelay(bool) {
+    // We can not use setNoDelay with HTTP/2.
+    // Node 10 limits http2session.socket methods to ones safe to use with HTTP/2.
+    // See also https://nodejs.org/api/http2.html#http2_http2session_socket
+  }
+
+  getFrame() {
+    if (this.frame) {
+      return this.frame;
     }
 
-    http2Headers[key] = value;
+    const method = {
+      [HTTP2_HEADER_PATH]: this.path,
+      [HTTP2_HEADER_METHOD]: this.method
+    };
+
+    let headers = this.mapToHttp2Header(this._headers);
+
+    headers = Object.assign(headers, method);
+
+    const frame = this.session.request(headers);
+
+    frame.once('response', (headers, flags) => {
+      headers = this.mapToHttpHeader(headers);
+      frame.headers = headers;
+      frame.statusCode = headers[HTTP2_HEADER_STATUS];
+      frame.status = frame.statusCode;
+      this.emit('response', frame);
+    });
+
+    this._headerSent = true;
+
+    frame.on('drain', () => this.emit('drain'));
+    frame.on('error', (error) => this.emit('error', error));
+    frame.on('close', () => this.session.close());
+
+    this.frame = frame;
+    return frame;
   }
 
-  return http2Headers;
-};
+  mapToHttpHeader(headers) {
+    const keys = Object.keys(headers);
+    const http2Headers = {};
+    for (let key of keys) {
+      let value = headers[key];
+      key = key.toLowerCase();
+      // header names come from the peer; never let one such as "__proto__"
+      // reach into the prototype chain of the headers object
+      if (!isSafeKey(key)) continue;
+      switch (key) {
+        case HTTP2_HEADER_SET_COOKIE:
+          value = Array.isArray(value) ? value : [value];
+          break;
+        default:
+          break;
+      }
 
-Request.prototype.setHeader = function (name, value) {
-  this._headers[name.toLowerCase()] = value;
-};
+      http2Headers[key] = value;
+    }
 
-Request.prototype.getHeader = function (name) {
-  return this._headers[name.toLowerCase()];
-};
+    return http2Headers;
+  }
 
-Request.prototype.write = function (data, encoding) {
-  const frame = this.getFrame();
-  return frame.write(data, encoding);
-};
+  mapToHttp2Header(headers) {
+    const keys = Object.keys(headers);
+    const http2Headers = {};
+    for (let key of keys) {
+      let value = headers[key];
+      key = key.toLowerCase();
+      switch (key) {
+        case HTTP2_HEADER_HOST:
+          key = HTTP2_HEADER_AUTHORITY;
+          value = /^http:\/\/|^https:\/\//.test(value)
+            ? new URL(value).host
+            : value;
+          break;
+        default:
+          break;
+      }
 
-Request.prototype.pipe = function (stream, options) {
-  const frame = this.getFrame();
-  return frame.pipe(stream, options);
-};
+      http2Headers[key] = value;
+    }
 
-Request.prototype.end = function (data) {
-  const frame = this.getFrame();
-  frame.end(data);
-};
+    return http2Headers;
+  }
 
-// eslint-disable-next-line no-unused-vars
-Request.prototype.abort = function (data) {
-  const frame = this.getFrame();
-  frame.close(NGHTTP2_CANCEL);
-  this.session.destroy();
-};
+  setHeader(name, value) {
+    this._headers[name.toLowerCase()] = value;
+  }
+
+  getHeader(name) {
+    return this._headers[name.toLowerCase()];
+  }
+
+  write(data, encoding) {
+    const frame = this.getFrame();
+    return frame.write(data, encoding);
+  }
+
+  pipe(stream, options) {
+    const frame = this.getFrame();
+    return frame.pipe(stream, options);
+  }
+
+  end(data) {
+    const frame = this.getFrame();
+    frame.end(data);
+  }
+
+  abort(data) {
+    const frame = this.getFrame();
+    frame.close(NGHTTP2_CANCEL);
+    this.session.destroy();
+  }
+
+  _destroy(error, callback) {
+    try {
+      if (this.frame) {
+        this.frame.close(NGHTTP2_CANCEL);
+      }
+    } catch (err) {
+      // ignore
+    }
+
+    try {
+      if (this.session && !this.session.destroyed) {
+        this.session.destroy();
+      }
+    } catch (err) {
+      // ignore
+    }
+
+    callback(error);
+  }
+}
 
 exports.setProtocol = setProtocol;

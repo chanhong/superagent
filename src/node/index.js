@@ -2,14 +2,13 @@
  * Module dependencies.
  */
 
-// eslint-disable-next-line node/no-deprecated-api
-const { parse, format, resolve } = require('url');
-const Stream = require('stream');
-const https = require('https');
-const http = require('http');
-const fs = require('fs');
-const zlib = require('zlib');
-const util = require('util');
+const { format } = require('node:url');
+const Stream = require('node:stream');
+const https = require('node:https');
+const http = require('node:http');
+const fs = require('node:fs');
+const zlib = require('node:zlib');
+const util = require('node:util');
 const qs = require('qs');
 const mime = require('mime');
 let methods = require('methods');
@@ -17,19 +16,16 @@ const FormData = require('form-data');
 const formidable = require('formidable');
 const debug = require('debug')('superagent');
 const CookieJar = require('cookiejar');
-const semverGte = require('semver/functions/gte');
 const safeStringify = require('fast-safe-stringify');
 
 const utils = require('../utils');
 const RequestBase = require('../request-base');
-const { unzip } = require('./unzip');
+const http2 = require('./http2wrapper');
+const { decompress } = require('./unzip');
 const Response = require('./response');
 
-const { mixin, hasOwn } = utils;
-
-let http2;
-
-if (semverGte(process.version, 'v10.10.0')) http2 = require('./http2wrapper');
+const { mixin, hasOwn, isBrotliEncoding, isGzipOrDeflateEncoding } = utils;
+const { chooseDecompresser } = require('./decompress');
 
 function request(method, url) {
   // callback
@@ -65,6 +61,166 @@ exports.agent = require('./agent');
  */
 
 function noop() {}
+
+/**
+ * Close an underlying Node request/session created during setup.
+ *
+ * Used when header application or later request-path work throws after
+ * `http.request()` / `http2.connect()` has already allocated a socket.
+ *
+ * @param {Request} request_
+ * @api private
+ */
+function disposeNodeRequest(request_) {
+  const { req } = request_;
+  if (!req || request_._requestDisposed) {
+    return;
+  }
+
+  request_._requestDisposed = true;
+  if (request_._streamResponseListener) {
+    req.removeListener('response', request_._streamResponseListener);
+    request_._streamResponseListener = undefined;
+    request_._streamResponse = undefined;
+  }
+
+  try {
+    // HTTP/2 wrapper keeps a session open as soon as request() is called.
+    // Prefer destroying that session so we never call abort() → getFrame()
+    // with invalid headers (which would emit a late protocol error).
+    if (req.session && typeof req.session.destroy === 'function') {
+      req.session.destroy();
+    }
+
+    if (req.socket && typeof req.socket.destroy === 'function') {
+      req.socket.destroy();
+    }
+
+    if (typeof req.destroy === 'function') {
+      req.destroy();
+      return;
+    }
+
+    if (typeof req.abort === 'function') {
+      req.abort();
+      return;
+    }
+
+    if (typeof req.end === 'function') {
+      req.end();
+    }
+  } catch (err) {
+    debug('error disposing request after setup failure', err);
+  }
+}
+
+/**
+ * Preserve dot-only path segments that WHATWG URL normalizes away.
+ *
+ * @param {String} urlString
+ * @returns {{urlString: String, restorePath: Function}}
+ * @api private
+ */
+function preserveDotSegments(urlString) {
+  const parts = urlString.match(
+    /^([a-z][a-z\d+.-]*:\/\/[^/?#]*)([^?#]*)(.*)$/i
+  );
+  if (!parts) {
+    return {
+      urlString,
+      restorePath(path) {
+        return path;
+      }
+    };
+  }
+
+  const segments = [];
+  const prefix = '__superagent_dot_segment_';
+  const path = parts[2].replace(
+    /\/((?:\.|%2e){1,2})(?=\/|$)/gi,
+    (_, segment) => {
+      const marker = `${prefix}${segments.length}__`;
+      segments.push(segment);
+      return `/${marker}`;
+    }
+  );
+
+  return {
+    urlString: `${parts[1]}${path}${parts[3]}`,
+    restorePath(requestPath) {
+      let restoredPath = requestPath;
+      for (const [index, segment] of segments.entries()) {
+        restoredPath = restoredPath.replace(`${prefix}${index}__`, segment);
+      }
+
+      return restoredPath;
+    }
+  };
+}
+
+/**
+ * Default a scheme-less URL string to http://.
+ *
+ * @param {String} urlString
+ * @return {String}
+ * @api private
+ */
+function withDefaultProtocol(urlString) {
+  return urlString.indexOf('http') === 0 ? urlString : `http://${urlString}`;
+}
+
+/**
+ * Protocols a redirect may lead to. A request made over a Unix domain socket
+ * may additionally be redirected within that same socket (see
+ * `isAllowedRedirectTarget`).
+ */
+const REDIRECT_PROTOCOLS = new Set(['http:', 'https:']);
+const UNIX_SOCKET_PROTOCOLS = new Set(['http+unix:', 'https+unix:']);
+
+/**
+ * Whether a redirect from `current` to `target` may be followed.
+ *
+ * Only http(s) targets are followed. A remote server must never be able to
+ * steer the client into a local Unix domain socket (`http+unix://`) or any
+ * other scheme through a Location header; a request that was itself made over
+ * a Unix domain socket may only be redirected within that same socket.
+ *
+ * @param {URL} current
+ * @param {URL} target
+ * @return {Boolean}
+ * @api private
+ */
+function isAllowedRedirectTarget(current, target) {
+  if (REDIRECT_PROTOCOLS.has(target.protocol)) return true;
+
+  return (
+    UNIX_SOCKET_PROTOCOLS.has(target.protocol) &&
+    target.protocol === current.protocol &&
+    target.hostname !== '' &&
+    target.hostname === current.hostname
+  );
+}
+
+/**
+ * Whether two URLs share an origin. Unix socket URLs have an opaque (`null`)
+ * WHATWG origin, so they are compared by protocol and socket path instead.
+ *
+ * @param {URL} current
+ * @param {URL} target
+ * @return {Boolean}
+ * @api private
+ */
+function isSameOrigin(current, target) {
+  if (current.origin !== 'null' && target.origin !== 'null') {
+    return current.origin === target.origin;
+  }
+
+  return (
+    current.protocol === target.protocol &&
+    current.hostname === target.hostname &&
+    current.port === target.port
+  );
+}
 
 /**
  * Expose `Response`.
@@ -103,8 +259,12 @@ exports.protocols = {
  */
 
 exports.serialize = {
-  'application/x-www-form-urlencoded': qs.stringify,
-  'application/json': safeStringify
+  'application/x-www-form-urlencoded'(object) {
+    return qs.stringify(object, { indices: false, strictNullHandling: true });
+  },
+  'application/json': safeStringify,
+  // CSP reports carry JSON bodies but use a distinct registered media type.
+  'application/csp-report': safeStringify
 };
 
 /**
@@ -117,6 +277,22 @@ exports.serialize = {
  */
 
 exports.parse = require('./parsers');
+
+/**
+ * The default parsers as shipped; they only accumulate a buffered body, so
+ * they are skipped for unbuffered responses (see `_end`). Captured here so
+ * that a parser a user installs under the same key is still honoured.
+ */
+const BUILT_IN_PARSERS = {
+  'application/x-www-form-urlencoded':
+    exports.parse['application/x-www-form-urlencoded'],
+  'application/json': exports.parse['application/json'],
+  text: exports.parse.text,
+  image: exports.parse.image
+};
+const BUFFERING_PARSERS = new Set(
+  Object.keys(BUILT_IN_PARSERS).map((key) => BUILT_IN_PARSERS[key])
+);
 
 /**
  * Default buffering map. Can be used to set certain
@@ -167,6 +343,7 @@ function Request(method, url) {
   this.qsRaw = this._query; // Unused, for backwards compatibility only
   this._redirectList = [];
   this._streamRequest = false;
+  this._lookup = undefined;
   this.once('end', this.clearTimeout.bind(this));
 }
 
@@ -301,8 +478,33 @@ Request.prototype._getFormData = function () {
  */
 
 Request.prototype.agent = function (agent) {
+  if (
+    arguments.length > 0 &&
+    agent &&
+    typeof agent === 'object' &&
+    typeof agent.addRequest !== 'function'
+  ) {
+    throw new TypeError(
+      '.agent() expects an http(s).Agent-compatible object. Did you mean to use .cert() and .key()?'
+    );
+  }
+
   if (arguments.length === 0) return this._agent;
   this._agent = agent;
+  return this;
+};
+
+/**
+ * Gets/sets the `lookup` function to use custom DNS resolver.
+ *
+ * @param {Function} lookup
+ * @return {Function}
+ * @api public
+ */
+
+Request.prototype.lookup = function (lookup) {
+  if (arguments.length === 0) return this._lookup;
+  this._lookup = lookup;
   return this;
 };
 
@@ -399,6 +601,10 @@ Request.prototype.write = function (data, encoding) {
   const request_ = this.request();
   if (!this._streamRequest) {
     this._streamRequest = true;
+    this._streamResponseListener = (res) => {
+      this._streamResponse = res;
+    };
+    request_.once('response', this._streamResponseListener);
   }
 
   return request_.write(data, encoding);
@@ -436,9 +642,10 @@ Request.prototype._pipeContinue = function (stream, options) {
     this._emitResponse();
     if (this._aborted) return;
 
-    if (this._shouldUnzip(res)) {
-      const unzipObject = zlib.createUnzip();
-      unzipObject.on('error', (error) => {
+    if (this._shouldDecompress(res)) {
+      const decompresser = chooseDecompresser(res);
+
+      decompresser.on('error', (error) => {
         if (error && error.code === 'Z_BUF_ERROR') {
           // unexpected end of file is ignored by browsers and curl
           stream.emit('end');
@@ -447,14 +654,13 @@ Request.prototype._pipeContinue = function (stream, options) {
 
         stream.emit('error', error);
       });
-      res.pipe(unzipObject).pipe(stream, options);
+      res.pipe(decompresser).pipe(stream, options);
+      // don't emit 'end' until decompresser has completed writing all its data.
+      decompresser.once('end', () => this.emit('end'));
     } else {
       res.pipe(stream, options);
+      res.once('end', () => this.emit('end'));
     }
-
-    res.once('end', () => {
-      this.emit('end');
-    });
   });
   return stream;
 };
@@ -488,16 +694,46 @@ Request.prototype._redirect = function (res) {
 
   debug('redirect %s -> %s', this.url, url);
 
-  // location
-  url = resolve(this.url, url);
-
   // ensure the response is being consumed
   // this is required for Node v0.10+
   res.resume();
 
+  // location
+  //
+  // The Location header is attacker controlled: a malformed value must not
+  // throw out of the response event (which would crash the process), and only
+  // http(s) targets may be followed. A remote server must never be able to
+  // steer the client into a local Unix domain socket or another scheme.
+  let target;
+  let current;
+  try {
+    current = new URL(withDefaultProtocol(this.url));
+    target = new URL(url, current);
+  } catch (err) {
+    const error = new Error(`Invalid redirect location: ${url}`);
+    error.code = 'EINVALIDREDIRECT';
+    error.status = res.statusCode;
+    error.location = url;
+    return this.callback(error, res);
+  }
+
+  if (!isAllowedRedirectTarget(current, target)) {
+    const error = new Error(
+      `Unsupported protocol in redirect location: ${target.href}`
+    );
+    error.code = 'EUNSUPPORTEDREDIRECT';
+    error.status = res.statusCode;
+    error.location = url;
+    return this.callback(error, res);
+  }
+
+  url = target.href;
+
+  this._emitPreRedirect(res);
+
   let headers = this.req.getHeaders ? this.req.getHeaders() : this.req._headers;
 
-  const changesOrigin = parse(url).host !== parse(this.url).host;
+  const changesOrigin = !isSameOrigin(current, target);
 
   // implementation of 302 following defacto standard
   if (res.statusCode === 301 || res.statusCode === 302) {
@@ -527,6 +763,19 @@ Request.prototype._redirect = function (res) {
 
   // 307 preserves method
   // 308 preserves method
+  if ((res.statusCode === 307 || res.statusCode === 308) && changesOrigin) {
+    delete headers.authorization;
+    delete headers.cookie;
+  }
+
+  // credentials given with `.auth(user, pass, { type: 'auto' })` are turned
+  // into an Authorization header by every `request()` call, so they must be
+  // dropped as well or they would be re-sent to the new origin
+  if (changesOrigin) {
+    this.username = undefined;
+    this.password = undefined;
+  }
+
   delete headers.host;
 
   delete this.req;
@@ -536,12 +785,13 @@ Request.prototype._redirect = function (res) {
   _initHeaders(this);
 
   // redirect
+  this.res = res;
   this._endCalled = false;
   this.url = url;
   this.qs = {};
   this._query.length = 0;
   this.set(headers);
-  this.emit('redirect', res);
+  this._emitRedirect();
   this._redirectList.push(this.url);
   this.end(this._callback);
   return this;
@@ -680,52 +930,39 @@ Request.prototype.request = function () {
     return this.emit('error', err);
   }
 
-  let { url } = this;
+  const urlString = withDefaultProtocol(this.url);
   const retries = this._retries;
 
-  // Capture backticks as-is from the final query string built above.
-  // Note: this'll only find backticks entered in req.query(String)
-  // calls, because qs.stringify unconditionally encodes backticks.
-  let queryStringBackticks;
-  if (url.includes('`')) {
-    const queryStartIndex = url.indexOf('?');
-
-    if (queryStartIndex !== -1) {
-      const queryString = url.slice(queryStartIndex + 1);
-      queryStringBackticks = queryString.match(/`|%60/g);
-    }
-  }
-
-  // default to http://
-  if (url.indexOf('http') !== 0) url = `http://${url}`;
-  url = parse(url);
-
-  // See https://github.com/visionmedia/superagent/issues/1367
-  if (queryStringBackticks) {
-    let i = 0;
-    url.query = url.query.replace(/%60/g, () => queryStringBackticks[i++]);
-    url.search = `?${url.query}`;
-    url.path = url.pathname + url.search;
-  }
+  const protectedUrl = preserveDotSegments(urlString);
+  const url = new URL(protectedUrl.urlString);
+  let { protocol } = url;
+  const path = protectedUrl.restorePath(`${url.pathname}${url.search}`);
 
   // support unix sockets
-  if (/^https?\+unix:/.test(url.protocol) === true) {
+  if (/^https?\+unix:/.test(protocol) === true) {
     // get the protocol
-    url.protocol = `${url.protocol.split('+')[0]}:`;
+    protocol = `${protocol.split('+')[0]}:`;
 
-    // get the socket, path
-    const unixParts = url.path.match(/^([^/]+)(.+)$/);
-    options.socketPath = unixParts[1].replace(/%2F/g, '/');
-    url.path = unixParts[2];
+    if (!url.hostname) {
+      throw new Error(
+        'Invalid unix socket URL: percent-encode the socket path by replacing "/" with "%2F".'
+      );
+    }
+
+    // get the socket path
+    options.socketPath = url.hostname.replace(/%2F/g, '/');
+    url.host = '';
+    url.hostname = '';
   }
 
   // Override IP address of a hostname
   if (this._connectOverride) {
     const { hostname } = url;
-    const match =
-      hostname in this._connectOverride
-        ? this._connectOverride[hostname]
-        : this._connectOverride['*'];
+    // the hostname may come from a redirect, so never let an inherited key
+    // such as "constructor" act as an override entry
+    const match = hasOwn(this._connectOverride, hostname)
+      ? this._connectOverride[hostname]
+      : this._connectOverride['*'];
     if (match) {
       // backup the real host
       if (!this._header.host) {
@@ -757,14 +994,23 @@ Request.prototype.request = function () {
   // options
   options.method = this.method;
   options.port = url.port;
-  options.path = url.path;
-  options.host = url.hostname;
+  options.path = path;
+  options.host = utils.normalizeHostname(url.hostname); // ex: [::1] -> ::1
+  // Apply user headers before connecting so invalid values (e.g. undefined)
+  // throw without allocating a TCP handle. See #1827.
+  // HTTP/2's wrapper forwards leftover options to http2.connect(), so only
+  // do this on HTTP/1.
+  if (!this._enableHttp2) {
+    options.headers = { ...this.header };
+  }
+
   options.ca = this._ca;
   options.key = this._key;
   options.pfx = this._pfx;
   options.cert = this._cert;
   options.passphrase = this._passphrase;
   options.agent = this._agent;
+  options.lookup = this._lookup;
   options.rejectUnauthorized =
     typeof this._disableTLSCerts === 'boolean'
       ? !this._disableTLSCerts
@@ -783,34 +1029,21 @@ Request.prototype.request = function () {
   }
 
   // initiate request
-  const mod = this._enableHttp2
-    ? exports.protocols['http2:'].setProtocol(url.protocol)
-    : exports.protocols[url.protocol];
+  const module_ = this._enableHttp2
+    ? exports.protocols['http2:'].setProtocol(protocol)
+    : exports.protocols[protocol];
 
   // request
-  this.req = mod.request(options);
+  this.req = module_.request(options);
   const { req } = this;
 
-  // set tcp no delay
-  req.setNoDelay(true);
-
-  if (options.method !== 'HEAD') {
-    req.setHeader('Accept-Encoding', 'gzip, deflate');
-  }
-
-  this.protocol = url.protocol;
-  this.host = url.host;
-
-  // expose events
-  req.once('drain', () => {
-    this.emit('drain');
-  });
-
+  // Attach this before header setup so destroy() during a setup exception
+  // cannot emit an unhandled 'error' (or a second callback).
   req.on('error', (error) => {
     // flag abortion here for out timeouts
     // because node will emit a faux-error "socket hang up"
     // when request is aborted before a connection is made
-    if (this._aborted) return;
+    if (this._aborted || this._requestDisposed) return;
     // if not the same, we are in the **old** (cancelled) request,
     // so need to continue (same as for above)
     if (this._retries !== retries) return;
@@ -820,37 +1053,88 @@ Request.prototype.request = function () {
     this.callback(error);
   });
 
-  // auth
-  if (url.auth) {
-    const auth = url.auth.split(':');
-    this.auth(auth[0], auth[1]);
-  }
+  try {
+    // set tcp no delay
+    req.setNoDelay(true);
 
-  if (this.username && this.password) {
-    this.auth(this.username, this.password);
-  }
-
-  for (const key in this.header) {
-    if (hasOwn(this.header, key)) req.setHeader(key, this.header[key]);
-  }
-
-  // add cookies
-  if (this.cookies) {
-    if (hasOwn(this._header, 'cookie')) {
-      // merge
-      const temporaryJar = new CookieJar.CookieJar();
-      temporaryJar.setCookies(this._header.cookie.split(';'));
-      temporaryJar.setCookies(this.cookies.split(';'));
-      req.setHeader(
-        'Cookie',
-        temporaryJar.getCookies(CookieJar.CookieAccessInfo.All).toValueString()
-      );
-    } else {
-      req.setHeader('Cookie', this.cookies);
+    if (options.method !== 'HEAD') {
+      req.setHeader('Accept-Encoding', 'gzip, deflate');
     }
+
+    this.protocol = protocol;
+    this.host = url.host;
+
+    // expose events
+    const emitDrain = () => {
+      this.emit('drain');
+    };
+
+    req.on('drain', emitDrain);
+    req.once('close', () => {
+      req.removeListener('drain', emitDrain);
+    });
+
+    // auth
+    if (url.username || url.password) {
+      this.auth(url.username, url.password);
+    }
+
+    if (this.username && this.password) {
+      this.auth(this.username, this.password);
+    }
+
+    for (const key in this.header) {
+      if (hasOwn(this.header, key)) req.setHeader(key, this.header[key]);
+    }
+
+    // add cookies
+    if (this.cookies) {
+      if (hasOwn(this._header, 'cookie')) {
+        // merge
+        const temporaryJar = new CookieJar.CookieJar();
+        temporaryJar.setCookies(this._header.cookie.split('; '));
+        temporaryJar.setCookies(this.cookies.split('; '));
+        req.setHeader(
+          'Cookie',
+          temporaryJar
+            .getCookies(CookieJar.CookieAccessInfo.All)
+            .toValueString()
+        );
+      } else {
+        req.setHeader('Cookie', this.cookies);
+      }
+    }
+
+    return req;
+  } catch (err) {
+    disposeNodeRequest(this);
+    throw err;
+  }
+};
+
+/**
+ * Abort/end the Node request if it was created.
+ *
+ * @api private
+ */
+Request.prototype._disposeRequest = function () {
+  disposeNodeRequest(this);
+};
+
+/**
+ * Report a setup/request-path error without leaving the socket open.
+ *
+ * @param {Error} error
+ * @api private
+ */
+Request.prototype._failRequest = function (error) {
+  this._disposeRequest();
+  if (typeof this._callback === 'function' && this._callback !== noop) {
+    this.callback(error);
+    return;
   }
 
-  return req;
+  throw error;
 };
 
 /**
@@ -870,7 +1154,11 @@ Request.prototype.callback = function (error, res) {
   // Avoid the error which is emitted from 'socket hang up' to cause the fn undefined error on JS runtime.
   const fn = this._callback || noop;
   this.clearTimeout();
-  if (this.called) return console.warn('superagent: double callback bug');
+  if (this.called) {
+    if (this.timedout) return;
+    return console.warn('superagent: double callback bug');
+  }
+
   this.called = true;
 
   if (!error) {
@@ -884,8 +1172,9 @@ Request.prototype.callback = function (error, res) {
         error = new Error(message);
         error.status = res ? res.status : undefined;
       }
-    } catch (error_) {
-      error = error_;
+    } catch (err) {
+      error = err;
+      error.status = error.status || (res ? res.status : undefined);
     }
   }
 
@@ -952,8 +1241,46 @@ Request.prototype._emitResponse = function (body, files) {
   return response;
 };
 
+/**
+ * Emit `redirect` event, passing an instanceof `Response`.
+ *
+ * @api private
+ */
+
+Request.prototype._emitRedirect = function () {
+  const response = new Response(this);
+  response.redirects = this._redirectList;
+  this.emit('redirect', response);
+};
+
+/**
+ * Emit a redirect response before the request URL is changed.
+ *
+ * @param {IncomingMessage} res
+ * @api private
+ */
+
+Request.prototype._emitPreRedirect = function (res) {
+  this.res = res;
+  const response = new Response(this);
+  response.redirects = this._redirectList;
+  this.emit('pre-redirect', response);
+};
+
 Request.prototype.end = function (fn) {
-  this.request();
+  try {
+    this.request();
+  } catch (err) {
+    this._endCalled = true;
+    if (typeof fn === 'function') {
+      this._callback = fn;
+      this.callback(err);
+      return;
+    }
+
+    throw err;
+  }
+
   debug('%s %s', this.method, this.url);
 
   if (this._endCalled) {
@@ -984,31 +1311,47 @@ Request.prototype._end = function () {
 
   // body
   if (method !== 'HEAD' && !req._headerSent) {
-    // serialize stuff
-    if (typeof data !== 'string') {
-      let contentType = req.getHeader('Content-Type');
-      // Parse out just the content type from the header (ignore the charset)
-      if (contentType) contentType = contentType.split(';')[0];
-      let serialize = this._serializer || exports.serialize[contentType];
-      if (!serialize && isJSON(contentType)) {
-        serialize = exports.serialize['application/json'];
+    try {
+      // serialize stuff
+      if (typeof data !== 'string') {
+        let contentType = req.getHeader('Content-Type');
+        // Parse out just the content type from the header (ignore the charset)
+        if (contentType) contentType = contentType.split(';')[0];
+        let serialize =
+          this._serializer ||
+          (hasOwn(exports.serialize, contentType)
+            ? exports.serialize[contentType]
+            : undefined);
+        if (!serialize && isJSON(contentType)) {
+          serialize = exports.serialize['application/json'];
+        }
+
+        if (serialize) data = serialize(data);
       }
 
-      if (serialize) data = serialize(data);
+      // content-length
+      if (data && !req.getHeader('Content-Length')) {
+        req.setHeader(
+          'Content-Length',
+          Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data)
+        );
+      }
+    } catch (err) {
+      return this._failRequest(err);
     }
+  }
 
-    // content-length
-    if (data && !req.getHeader('Content-Length')) {
-      req.setHeader(
-        'Content-Length',
-        Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data)
-      );
-    }
+  let streamResponse;
+  if (this._streamResponseListener) {
+    req.removeListener('response', this._streamResponseListener);
+    this._streamResponseListener = undefined;
+    streamResponse = this._streamResponse;
+    this._streamResponse = undefined;
   }
 
   // response
   // eslint-disable-next-line complexity
-  req.once('response', (res) => {
+  const handleResponse = (res) => {
     debug('%s %s -> %s', this.method, this.url, res.statusCode);
 
     if (this._responseTimeoutTimer) {
@@ -1041,12 +1384,13 @@ Request.prototype._end = function () {
     }
 
     // zlib support
-    if (this._shouldUnzip(res)) {
-      unzip(req, res);
+    let decompresser = null;
+    if (this._shouldDecompress(res)) {
+      decompresser = decompress(req, res);
     }
 
     let buffer = this._buffer;
-    if (buffer === undefined && mime in exports.buffer) {
+    if (buffer === undefined && hasOwn(exports.buffer, mime)) {
       buffer = Boolean(exports.buffer[mime]);
     }
 
@@ -1063,18 +1407,62 @@ Request.prototype._end = function () {
         parser = exports.parse.image; // It's actually a generic Buffer
         buffer = true;
       } else if (multipart) {
-        const form = formidable();
-        parser = form.parse.bind(form);
+        const form = formidable.formidable();
+        parser = (res, callback) => {
+          // Create a PassThrough stream that acts as a proper HTTP request
+          const bridgeStream = new Stream.PassThrough();
+
+          // Add HTTP request properties from the current request context
+          bridgeStream.method = this.method || 'POST';
+          bridgeStream.url = this.url || '/';
+          bridgeStream.httpVersion = res.httpVersion || '1.1';
+          bridgeStream.headers = res.headers || {};
+          bridgeStream.socket = res.socket || { readable: true };
+
+          // Pipe the response data through the bridge stream
+          res.pipe(bridgeStream);
+
+          form.parse(bridgeStream, (err, fields, files) => {
+            if (err) return callback(err);
+
+            // Formidable v3 always returns arrays, but SuperAgent expects single values
+            // Flatten single-item arrays to maintain backward compatibility
+            const flattenedFields = {};
+            if (fields) {
+              for (const key in fields) {
+                if (!Object.prototype.hasOwnProperty.call(fields, key)) continue;
+                const value = fields[key];
+                flattenedFields[key] =
+                  Array.isArray(value) && value.length === 1 ? value[0] : value;
+              }
+            }
+
+            const flattenedFiles = {};
+            if (files) {
+              for (const key in files) {
+                if (!Object.prototype.hasOwnProperty.call(files, key)) continue;
+                const value = files[key];
+                flattenedFiles[key] =
+                  Array.isArray(value) && value.length === 1 ? value[0] : value;
+              }
+            }
+
+            // Return flattened fields as the object parameter to match SuperAgent's expected format
+            callback(null, flattenedFields, flattenedFiles);
+          });
+        };
+
         buffer = true;
-      } else if (isImageOrVideo(mime)) {
+      } else if (isBinary(mime)) {
         parser = exports.parse.image;
-        buffer = true; // For backwards-compatibility buffering default is ad-hoc MIME-dependent
-      } else if (exports.parse[mime]) {
+        buffer = buffer !== false; // For backwards-compatibility buffering default is ad-hoc MIME-dependent
+      } else if (hasOwn(exports.parse, mime)) {
+        // `mime` is attacker controlled; an inherited key such as
+        // "constructor" must not resolve to a parser
         parser = exports.parse[mime];
       } else if (type === 'text') {
         parser = exports.parse.text;
         buffer = buffer !== false;
-
         // everyone wants their own white-labeled json
       } else if (isJSON(mime)) {
         parser = exports.parse['application/json'];
@@ -1095,23 +1483,50 @@ Request.prototype._end = function () {
     this._resBuffered = buffer;
     let parserHandlesEnd = false;
     if (buffer) {
-      // Protectiona against zip bombs and other nuisance
-      let responseBytesLeft = this._maxResponseSize || 200_000_000;
+      // Protection against zip bombs and other nuisance
+      let responseBytesLeft = this._maxResponseSize || 200000000;
+      let exceeded = false;
       res.on('data', (buf) => {
-        responseBytesLeft -= buf.byteLength || buf.length > 0 ? buf.length : 0;
+        if (exceeded) return;
+        // Parsers may have called `setEncoding()`, in which case chunks are
+        // strings: count their encoded size rather than their UTF-16 length
+        responseBytesLeft -= Buffer.isBuffer(buf)
+          ? buf.length
+          : Buffer.byteLength(String(buf));
         if (responseBytesLeft < 0) {
-          // This will propagate through error event
+          exceeded = true;
           const error = new Error('Maximum response size reached');
           error.code = 'ETOOLARGE';
           // Parsers aren't required to observe error event,
           // so would incorrectly report success
           parserHandlesEnd = false;
-          // Will not emit error event
-          res.destroy(error);
-          // so we do callback now
+          // A decompression bomb keeps inflating (and emitting) long after
+          // the compressed input was consumed; stop it here so the limit
+          // also bounds CPU and avoids a flood of late callbacks.
+          if (decompresser) decompresser.destroy();
+          // Destroy without an error: IncomingMessage.destroy(err) emits
+          // 'error', and the parser may also fail, each of which would
+          // call callback() again ("superagent: double callback bug").
+          res.destroy();
           this.callback(error, null);
         }
       });
+    }
+
+    if (parser && !buffer && BUFFERING_PARSERS.has(parser)) {
+      // The built-in parsers exist only to accumulate the body. When the
+      // response is not buffered (`.buffer(false)`, or an unbuffered default
+      // such as application/octet-stream) they would still collect the entire
+      // stream in memory, without any size limit, while the response has
+      // already been handed out to the caller. Keep only the encoding they
+      // would have applied so `res.on('data')` consumers see the same chunks.
+      if (parser === BUILT_IN_PARSERS['application/x-www-form-urlencoded']) {
+        res.setEncoding('ascii');
+      } else if (parser !== BUILT_IN_PARSERS.image) {
+        res.setEncoding('utf8');
+      }
+
+      parser = null;
     }
 
     if (parser) {
@@ -1121,8 +1536,8 @@ Request.prototype._end = function () {
         parserHandlesEnd = buffer;
 
         parser(res, (error, object, files) => {
-          if (this.timedout) {
-            // Timeout has already handled all callbacks
+          if (this.timedout || this.called) {
+            // Timeout or maxResponseSize has already handled all callbacks
             return;
           }
 
@@ -1157,11 +1572,30 @@ Request.prototype._end = function () {
       return;
     }
 
+    const completeAbortedResponse = () => {
+      if (!this._aborted) {
+        return false;
+      }
+
+      parserHandlesEnd = false;
+      if (!this.called) {
+        this.emit('end');
+        const response = this._emitResponse();
+        response.on('error', noop);
+        this.callback(null, response);
+      }
+
+      return true;
+    };
+
     // terminating events
     res.once('error', (error) => {
+      if (completeAbortedResponse()) return;
       parserHandlesEnd = false;
       this.callback(error, null);
     });
+    res.once('aborted', completeAbortedResponse);
+    res.once('close', completeAbortedResponse);
     if (!parserHandlesEnd)
       res.once('end', () => {
         debug('end %s %s', this.method, this.url);
@@ -1169,7 +1603,13 @@ Request.prototype._end = function () {
         this.emit('end');
         this.callback(null, this._emitResponse());
       });
-  });
+  };
+
+  if (streamResponse) {
+    process.nextTick(handleResponse, streamResponse);
+  } else {
+    req.once('response', handleResponse);
+  }
 
   this.emit('request', this);
 
@@ -1179,7 +1619,7 @@ Request.prototype._end = function () {
     let loaded = 0;
 
     const progress = new Stream.Transform();
-    progress._transform = (chunk, encoding, cb) => {
+    progress._transform = (chunk, encoding, callback) => {
       loaded += chunk.length;
       this.emit('progress', {
         direction: 'upload',
@@ -1187,7 +1627,7 @@ Request.prototype._end = function () {
         loaded,
         total
       });
-      cb(null, chunk);
+      callback(null, chunk);
     };
 
     return progress;
@@ -1215,52 +1655,51 @@ Request.prototype._end = function () {
     return chunking;
   };
 
-  // if a FormData instance got created, then we send that as the request body
-  const formData = this._formData;
-  if (formData) {
-    // set headers
-    const headers = formData.getHeaders();
-    for (const i in headers) {
-      if (hasOwn(headers, i)) {
-        debug('setting FormData header: "%s: %s"', i, headers[i]);
-        req.setHeader(i, headers[i]);
+  try {
+    // if a FormData instance got created, then we send that as the request body
+    const formData = this._formData;
+    if (formData) {
+      // set headers
+      const headers = formData.getHeaders();
+      for (const i in headers) {
+        if (hasOwn(headers, i)) {
+          debug('setting FormData header: "%s: %s"', i, headers[i]);
+          req.setHeader(i, headers[i]);
+        }
       }
+
+      // attempt to get "Content-Length" header
+      formData.getLength((error, length) => {
+        // Unknown stream lengths can use chunked encoding, but filesystem
+        // errors must fail before a partial multipart request is sent.
+        if (error && error !== 'Unknown stream') {
+          this._failRequest(error);
+          return;
+        }
+
+        debug('got FormData Content-Length: %s', length);
+        if (typeof length === 'number') {
+          req.setHeader('Content-Length', length);
+        }
+
+        formData.pipe(getProgressMonitor()).pipe(req);
+      });
+    } else if (Buffer.isBuffer(data)) {
+      bufferToChunks(data).pipe(getProgressMonitor()).pipe(req);
+    } else {
+      req.end(data);
     }
-
-    // attempt to get "Content-Length" header
-    formData.getLength((error, length) => {
-      // TODO: Add chunked encoding when no length (if err)
-      if (error) debug('formData.getLength had error', error, length);
-
-      debug('got FormData Content-Length: %s', length);
-      if (typeof length === 'number') {
-        req.setHeader('Content-Length', length);
-      }
-
-      formData.pipe(getProgressMonitor()).pipe(req);
-    });
-  } else if (Buffer.isBuffer(data)) {
-    bufferToChunks(data).pipe(getProgressMonitor()).pipe(req);
-  } else {
-    req.end(data);
+  } catch (err) {
+    this._failRequest(err);
   }
 };
 
 // Check whether response has a non-0-sized gzip-encoded body
-Request.prototype._shouldUnzip = (res) => {
-  if (res.statusCode === 204 || res.statusCode === 304) {
-    // These aren't supposed to have any body
-    return false;
-  }
-
-  // header content is a string, and distinction between 0 and no information is crucial
-  if (res.headers['content-length'] === '0') {
-    // We know that the body is empty (unfortunately, this check does not cover chunked encoding)
-    return false;
-  }
-
-  // console.log(res);
-  return /^\s*(?:deflate|gzip)\s*$/.test(res.headers['content-encoding']);
+Request.prototype._shouldDecompress = (res) => {
+  return (
+    hasNonEmptyResponseContent(res) &&
+    (isGzipOrDeflateEncoding(res) || isBrotliEncoding(res))
+  );
 };
 
 /**
@@ -1345,11 +1784,17 @@ function isText(mime) {
   return type === 'text' || subtype === 'x-www-form-urlencoded';
 }
 
-function isImageOrVideo(mime) {
-  let type = mime.split('/')[0];
-  if (type) type = type.toLowerCase().trim();
-
-  return type === 'image' || type === 'video';
+// This is not a catchall, but a start. It might be useful
+// in the long run to have file that includes all binary
+// content types from https://www.iana.org/assignments/media-types/media-types.xhtml
+function isBinary(mime) {
+  let [registry, name] = mime.split('/');
+  if (registry) registry = registry.toLowerCase().trim();
+  if (name) name = name.toLowerCase().trim();
+  return (
+    ['audio', 'font', 'image', 'video'].includes(registry) ||
+    ['gz', 'gzip'].includes(name)
+  );
 }
 
 /**
@@ -1376,4 +1821,19 @@ function isJSON(mime) {
 
 function isRedirect(code) {
   return [301, 302, 303, 305, 307, 308].includes(code);
+}
+
+function hasNonEmptyResponseContent(res) {
+  if (res.statusCode === 204 || res.statusCode === 304) {
+    // These aren't supposed to have any body
+    return false;
+  }
+
+  // header content is a string, and distinction between 0 and no information is crucial
+  if (res.headers['content-length'] === '0') {
+    // We know that the body is empty (unfortunately, this check does not cover chunked encoding)
+    return false;
+  }
+
+  return true;
 }

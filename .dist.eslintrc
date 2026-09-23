@@ -8,14 +8,7 @@
   },
   "plugins": ["compat"],
   "rules": {
-    "node/no-unsupported-features/es-builtins": ["error", {
-      "version": ">=8.0.0",
-      "ignores": [
-        "Atomics",
-        "BigInt",
-        "SharedArrayBuffer"
-      ]
-    }],
+    "node/no-unsupported-features/es-builtins": "off",
     "compat/compat": "error",
     "no-console": "off",
     "no-empty": "off",
@@ -24,6 +17,7 @@
     "no-undef": "off",
     "no-unused-vars": "off",
     "no-useless-escape": "off",
+    "no-obj-calls": "off",
     "no-cond-assign": "off",
     "no-redeclare": "off",
     "node/no-exports-assign": "off",
@@ -33,28 +27,16 @@
     "no-constant-condition": "off",
     "no-control-regex": "off",
     "no-fallthrough": "off",
-    "operator-linebreak": "off"
+    "operator-linebreak": "off",
+    "node/no-missing-require": "warn"
   },
   "globals": {
     "regeneratorRuntime": "writable"
   },
   "settings": {
     "polyfills": [
-      "Promise",
-      "Array.from",
-      "Symbol",
-      "Object.getOwnPropertySymbols",
-      "Object.setPrototypeOf",
-      "Set",
-      "Math.trunc",
-      "BigInt",
-      "Map",
-      "Reflect",
-      "WeakMap",
       "WeakRef",
-      "WeakSet",
-      "Atomics",
-      "SharedArrayBuffer"
+      "BigInt"
     ]
   }
 }

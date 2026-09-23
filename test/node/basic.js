@@ -1,10 +1,9 @@
 'use strict';
 
-const assert = require('assert');
-const fs = require('fs');
-const { EventEmitter } = require('events');
-const { StringDecoder } = require('string_decoder');
-const url = require('url');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const { EventEmitter } = require('node:events');
+const { StringDecoder } = require('node:string_decoder');
 const getSetup = require('../support/setup');
 const request = require('../support/client');
 
@@ -26,12 +25,39 @@ describe('[node] request', () => {
         done();
       });
     });
+
+    if (doesntWorkInHttp2)
+      it('should preserve literal and percent-encoded dot-only path segments', (done) => {
+        const http = require('node:http');
+        const expected = '/api/v2/../%2e/%2E%2e/error?query=value';
+        const server = http.createServer((request_, res) => {
+          res.end(request_.url);
+        });
+
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address();
+          request
+            .get(`http://127.0.0.1:${port}${expected}#fragment`)
+            .end((error, res) => {
+              server.close((closeError) => {
+                try {
+                  assert.ifError(error);
+                  assert.ifError(closeError);
+                  assert.equal(res.text, expected);
+                  done();
+                } catch (err) {
+                  done(err);
+                }
+              });
+            });
+        });
+      });
   });
 
   describe('with an object', () => {
     it('should format the url', () =>
-      request.get(url.parse(`${base}/login`)).then((res) => {
-        assert(res.ok);
+      request.get(new URL(`${base}/login`)).then((res) => {
+        assert.ok(res.ok);
       }));
   });
 
@@ -59,17 +85,30 @@ describe('[node] request', () => {
   describe('res.links', () => {
     it('should default to an empty object', () =>
       request.get(`${base}/login`).then((res) => {
-        res.links.should.eql({});
+        assert.deepEqual(res.links, {});
       }));
 
     it('should parse the Link header field', (done) => {
       request.get(`${base}/links`).end((error, res) => {
-        res.links.next.should.equal(
+        assert.equal(
+          res.links.next,
           'https://api.github.com/repos/visionmedia/mocha/issues?page=2'
         );
         done();
       });
     });
+  });
+
+  describe('content-type parameters', () => {
+    it('should not clobber response properties', () =>
+      request.get(`${base}/content-type-parameter-collision`).then((res) => {
+        const charset = 'utf' + '-8';
+        assert.equal(typeof res.header, 'object');
+        assert.equal(res.header.foo, 'a');
+        assert.equal(res.charset, charset);
+        assert.equal(typeof res.get, 'function');
+        assert.equal(res.get('foo'), 'a');
+      }));
   });
 
   describe('req.unset(field)', () => {
@@ -78,7 +117,7 @@ describe('[node] request', () => {
         .post(`${base}/echo`)
         .unset('User-Agent')
         .end((error, res) => {
-          assert.equal(void 0, res.header['user-agent']);
+          assert.equal(res.header['user-agent'], undefined);
           done();
         });
     });
@@ -86,16 +125,16 @@ describe('[node] request', () => {
 
   describe('case-insensitive', () => {
     it('should set/get header fields case-insensitively', () => {
-      const r = request.post(`${base}/echo`);
-      r.set('MiXeD', 'helloes');
-      assert.strictEqual(r.get('mixed'), 'helloes');
+      const request_ = request.post(`${base}/echo`);
+      request_.set('MiXeD', 'helloes');
+      assert.strictEqual(request_.get('mixed'), 'helloes');
     });
 
     it('should unset header fields case-insensitively', () => {
-      const r = request.post(`${base}/echo`);
-      r.set('MiXeD', 'helloes');
-      r.unset('MIXED');
-      assert.strictEqual(r.get('mixed'), undefined);
+      const request_ = request.post(`${base}/echo`);
+      request_.set('MiXeD', 'helloes');
+      request_.unset('MIXED');
+      assert.strictEqual(request_.get('mixed'), undefined);
     });
   });
 
@@ -106,7 +145,7 @@ describe('[node] request', () => {
       assert.equal('boolean', typeof request_.write('{"name"'));
       assert.equal('boolean', typeof request_.write(':"tobi"}'));
       request_.end((error, res) => {
-        res.text.should.equal('{"name":"tobi"}');
+        assert.equal(res.text, '{"name":"tobi"}');
         done();
       });
     });
@@ -116,19 +155,39 @@ describe('[node] request', () => {
     it('should pipe the response to the given stream', (done) => {
       const stream = new EventEmitter();
 
-      stream.buf = '';
+      let buf = '';
       stream.writable = true;
 
       stream.write = function (chunk) {
-        this.buf += chunk;
+        buf += chunk;
       };
 
       stream.end = function () {
-        this.buf.should.equal('{"name":"tobi"}');
+        assert.equal(buf, '{"name":"tobi"}');
         done();
       };
 
       request.post(`${base}/echo`).send('{"name":"tobi"}').pipe(stream);
+    });
+  });
+
+  describe('ipv6 address', () => {
+    it('should successfully query an ipv6 address', (done) => {
+      request
+        .get(`http://[::]:${process.env.ZUUL_PORT}/url?a=(b%29`)
+        .end((error, res) => {
+          assert.equal('/url?a=(b%29', res.text);
+          done();
+        });
+    });
+
+    it('should successfully query an ipv6 address', (done) => {
+      request
+        .get(`http://[::1]:${process.env.ZUUL_PORT}/url?a=(b%29`)
+        .end((error, res) => {
+          assert.equal('/url?a=(b%29', res.text);
+          done();
+        });
     });
   });
 
@@ -140,7 +199,7 @@ describe('[node] request', () => {
         .end((error, res) => {
           assert.ifError(error);
           assert.equal('custom stuff', res.text);
-          assert(res.buffered);
+          assert.ok(res.buffered);
           done();
         });
     });
@@ -158,7 +217,7 @@ describe('[node] request', () => {
           assert.ifError(error);
           assert.equal(res.type, type);
           assert.equal(send, res.text);
-          assert(res.buffered);
+          assert.ok(res.buffered);
           done();
         });
     });
@@ -174,18 +233,19 @@ describe('[node] request', () => {
         .end((error, res) => {
           assert.ifError(error);
           assert.equal(null, res.text);
-          res.body.should.eql({});
-          let buf = '';
+          assert.deepEqual(res.body, {});
+          let string_ = '';
           res.setEncoding('utf8');
           res.on('data', (chunk) => {
-            buf += chunk;
+            string_ += chunk;
           });
           res.on('end', () => {
-            buf.should.equal('hello this is dog');
+            assert.equal(string_, 'hello this is dog');
             done();
           });
         });
     });
+
     it("should take precedence over request.buffer['someMimeType'] = true", (done) => {
       const type = 'application/foobar';
       const send = 'hello this is a dog';
@@ -200,15 +260,15 @@ describe('[node] request', () => {
           assert.ifError(error);
           assert.equal(null, res.text);
           assert.equal(res.type, type);
-          assert(!res.buffered);
-          res.body.should.eql({});
-          let buf = '';
+          assert.equal(res.buffered, false);
+          assert.deepEqual(res.body, {});
+          let string_ = '';
           res.setEncoding('utf8');
           res.on('data', (chunk) => {
-            buf += chunk;
+            string_ += chunk;
           });
           res.on('end', () => {
-            buf.should.equal(send);
+            assert.equal(string_, send);
             done();
           });
         });
@@ -229,8 +289,8 @@ describe('[node] request', () => {
 
   describe('.agent()', () => {
     it('should return the defaut agent', (done) => {
-      const request_ = request.post(`${base}/echo`);
-      request_.agent().should.equal(false);
+      const agent = request.post(`${base}/echo`).agent();
+      assert.equal(agent, false);
       done();
     });
   });
@@ -239,7 +299,7 @@ describe('[node] request', () => {
     it('should set an agent to undefined and ensure it is chainable', (done) => {
       const request_ = request.get(`${base}/echo`);
       const returnValue = request_.agent(undefined);
-      returnValue.should.equal(request_);
+      assert.equal(returnValue, request_);
       assert.strictEqual(request_.agent(), undefined);
       done();
     });
@@ -247,13 +307,31 @@ describe('[node] request', () => {
 
   describe('.agent(new http.Agent())', () => {
     it('should set passed agent', (done) => {
-      const http = require('http');
+      const http = require('node:http');
       const request_ = request.get(`${base}/echo`);
       const agent = new http.Agent();
       const returnValue = request_.agent(agent);
-      returnValue.should.equal(request_);
-      request_.agent().should.equal(agent);
+      assert.equal(returnValue, request_);
+      assert.equal(request_.agent(), agent);
       done();
+    });
+  });
+
+  describe('.agent({ cert: "cert", key: "key" })', () => {
+    it('should reject configuration objects with a helpful error', () => {
+      assert.throws(
+        () =>
+          request
+            .get('https://example.com')
+            .agent({ cert: 'cert', key: 'key' }),
+        /Did you mean to use .cert\(\) and .key\(\)\?/
+      );
+    });
+
+    it('should preserve Agent-compatible objects', () => {
+      const agent = { addRequest() {} };
+      const request_ = request.get(`${base}/echo`).agent(agent);
+      assert.strictEqual(request_.agent(), agent);
     });
   });
 
@@ -264,9 +342,9 @@ describe('[node] request', () => {
         .type('application/x-dog')
         .send('hello this is dog')
         .then((res) => {
-          assert.equal(null, res.text);
+          assert.equal(res.text, null);
           assert.equal(res.body.toString(), 'hello this is dog');
-          res.buffered.should.be.true;
+          assert.equal(res.buffered, true);
         });
     });
   });
@@ -283,7 +361,7 @@ describe('[node] request', () => {
         .buffer(false)
         .end((error, res) => {
           assert.ifError(error);
-          assert(!res.buffered);
+          assert.equal(res.buffered, false);
           assert.equal(res.header['content-length'], Buffer.byteLength(img));
           done();
         });
@@ -313,7 +391,7 @@ describe('[node] request', () => {
         .send('wahoo')
         .end((error, res) => {
           try {
-            assert.equal('wahoo', res.text);
+            assert.equal(res.text, 'wahoo');
             next();
           } catch (err) {
             next(err);

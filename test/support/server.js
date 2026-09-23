@@ -1,5 +1,8 @@
-const fs = require('fs');
-let http = require('http');
+const fs = require('node:fs');
+const path = require('node:path');
+const process = require('node:process');
+const { Buffer } = require('node:buffer');
+let http = require('node:http');
 const multer = require('multer');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
@@ -9,7 +12,7 @@ const express = require('./express');
 let isPseudoHeader;
 
 if (process.env.HTTP2_TEST) {
-  http = require('http2');
+  http = require('node:http2');
   const {
     HTTP2_HEADER_AUTHORITY,
     HTTP2_HEADER_METHOD,
@@ -23,10 +26,14 @@ if (process.env.HTTP2_TEST) {
       case HTTP2_HEADER_METHOD: // :method
       case HTTP2_HEADER_PATH: // :path
       case HTTP2_HEADER_AUTHORITY: // :authority
-      case HTTP2_HEADER_SCHEME: // :scheme
+      case HTTP2_HEADER_SCHEME: {
+        // :scheme
         return true;
-      default:
+      }
+
+      default: {
         return false;
+      }
     }
   };
 }
@@ -85,7 +92,7 @@ app.use('/xdomain', (request, res, next) => {
   res.set('Access-Control-Allow-Credentials', 'true');
   res.set('Access-Control-Allow-Methods', 'POST');
   res.set('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type');
-  if (request.method == 'OPTIONS') return res.send(200);
+  if (request.method === 'OPTIONS') return res.send(200);
   next();
 });
 
@@ -99,6 +106,10 @@ app.get('/login', (request, res) => {
 
 app.get('/json', (request, res) => {
   res.status(200).json({ name: 'manny' });
+});
+
+app.get('/json-bom', (request, res) => {
+  res.type('json').send('\uFEFF{"name":"manny"}');
 });
 
 app.get('/json-hal', (request, res) => {
@@ -159,6 +170,15 @@ app.get('/links', (request, res) => {
   res.header(
     'Link',
     '<https://api.github.com/repos/visionmedia/mocha/issues?page=2>; rel="next"'
+  );
+  res.end();
+});
+
+app.get('/content-type-parameter-collision', (request, res) => {
+  res.set('foo', 'a');
+  res.set(
+    'content-type',
+    'text/csv; header=present; get=present; charset=utf-8'
   );
   res.end();
 });
@@ -235,8 +255,8 @@ app.get('/delay/slowbody', (request, res) => {
   // Send lots of garbage data to overflow all buffers along the way,
   // so that the browser gets some data before the request is done
   const initialDataSent = new Promise((resolve) => {
-    res.write(new Buffer.alloc(4000), () => {
-      res.write(new Buffer.alloc(16_000));
+    res.write(Buffer.alloc(4000), () => {
+      res.write(Buffer.alloc(16_000));
       resolve();
     });
   });
@@ -417,7 +437,13 @@ app.get('/cookie-redirect', (request, res) => {
   res.redirect(303, '/show-cookies');
 });
 
+app.get('/cross-host-cookie-redirect', (request, res) => {
+  res.cookie('origin', 'true', { path: '/' });
+  res.redirect(303, request.query.destination);
+});
+
 app.get('/set-cookie', (request, res) => {
+  res.cookie('replaced', 'no');
   res.cookie('persist', '123');
   res.send('ok');
 });
@@ -490,7 +516,9 @@ app.get('/manny', (request, res) => {
 });
 
 function serveImageWithType(res, type) {
-  const img = fs.readFileSync(`${__dirname}/../node/fixtures/test.png`);
+  const img = fs.readFileSync(
+    path.join(__dirname, '../node/fixtures/test.png')
+  );
   res.writeHead(200, { 'Content-Type': type });
   res.end(img, 'binary');
 }
@@ -500,6 +528,14 @@ app.get('/image', (request, res) => {
 });
 app.get('/image-as-octets', (request, res) => {
   serveImageWithType(res, 'application/octet-stream');
+});
+
+app.get('/binary-data', (request, res) => {
+  const binData = fs.readFileSync(
+    path.join(__dirname, '../node/fixtures/test.aac')
+  );
+  res.writeHead(200, { 'Content-type': 'audio/aac' });
+  res.end(binData, 'binary');
 });
 
 app.get('/chunked-json', (request, res) => {
@@ -529,7 +565,7 @@ app.get('/if-mod', (request, res) => {
 
 const called = {};
 app.get('/error/ok/:id', (request, res) => {
-  if (request.query.qs != 'present') {
+  if (request.query.qs !== 'present') {
     return res.status(400).end('query string lost');
   }
 

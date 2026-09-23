@@ -21,7 +21,7 @@ const Emitter = require('component-emitter');
 const safeStringify = require('fast-safe-stringify');
 const qs = require('qs');
 const RequestBase = require('./request-base');
-const { isObject, mixin, hasOwn } = require('./utils');
+const { isObject, mixin, hasOwn, isSafeKey } = require('./utils');
 const ResponseBase = require('./response-base');
 const Agent = require('./agent-base');
 
@@ -60,30 +60,9 @@ exports.Request = Request;
  */
 
 request.getXHR = () => {
-  if (
-    root.XMLHttpRequest &&
-    (!root.location ||
-      root.location.protocol !== 'file:' ||
-      !root.ActiveXObject)
-  ) {
-    return new XMLHttpRequest();
+  if (root.XMLHttpRequest) {
+    return new root.XMLHttpRequest();
   }
-
-  try {
-    return new ActiveXObject('Microsoft.XMLHTTP');
-  } catch {/**/}
-
-  try {
-    return new ActiveXObject('Msxml2.XMLHTTP.6.0');
-  } catch {/**/}
-
-  try {
-    return new ActiveXObject('Msxml2.XMLHTTP.3.0');
-  } catch {/**/}
-
-  try {
-    return new ActiveXObject('Msxml2.XMLHTTP');
-  } catch {/**/}
 
   throw new Error('Browser-only version of superagent could not find XHR');
 };
@@ -204,6 +183,20 @@ request.types = {
 };
 
 /**
+ * Map a short type name through `request.types`, falling back to the name
+ * itself. Only own entries count: a name such as "constructor" must not
+ * resolve to an inherited function.
+ *
+ * @param {String} type
+ * @return {String}
+ * @api private
+ */
+
+function lookupType(type) {
+  return (hasOwn(request.types, type) && request.types[type]) || type;
+}
+
+/**
  * Default serialization map.
  *
  *     superagent.serialize['application/xml'] = function(obj){
@@ -213,8 +206,12 @@ request.types = {
  */
 
 request.serialize = {
-  'application/x-www-form-urlencoded': qs.stringify,
-  'application/json': safeStringify
+  'application/x-www-form-urlencoded'(object) {
+    return qs.stringify(object, { indices: false, strictNullHandling: true });
+  },
+  'application/json': safeStringify,
+  // CSP reports carry JSON bodies but use a distinct registered media type.
+  'application/csp-report': safeStringify
 };
 
 /**
@@ -257,6 +254,7 @@ function parseHeader(string_) {
     }
 
     field = line.slice(0, index).toLowerCase();
+    if (!isSafeKey(field)) continue;
     value = trim(line.slice(index + 1));
     fields[field] = value;
   }
@@ -352,11 +350,10 @@ function Response(request_) {
 
   if (this.text === null && request_._responseType) {
     this.body = this.xhr.response;
+  } else if (this.req.method === 'HEAD') {
+    this.body = null;
   } else {
-    this.body =
-      this.req.method === 'HEAD'
-        ? null
-        : this._parseBody(this.text ? this.text : this.xhr.response);
+    this.body = this._parseBody(this.text || this.xhr.response);
   }
 }
 
@@ -374,7 +371,11 @@ mixin(Response.prototype, ResponseBase.prototype);
  */
 
 Response.prototype._parseBody = function (string_) {
-  let parse = request.parse[this.type];
+  // `this.type` is taken from the response; an inherited key such as
+  // "constructor" must not resolve to a parser
+  let parse = hasOwn(request.parse, this.type)
+    ? request.parse[this.type]
+    : undefined;
   if (this.req._parser) {
     return this.req._parser(this, string_);
   }
@@ -436,10 +437,10 @@ function Request(method, url) {
 
     try {
       res = new Response(self);
-    } catch (error_) {
+    } catch (err) {
       error = new Error('Parser is unable to parse the response');
       error.parse = true;
-      error.original = error_;
+      error.original = err;
       // issue #675: return the raw response if the response parsing fails
       if (self.xhr) {
         // ie9 doesn't have 'response' property
@@ -448,7 +449,7 @@ function Request(method, url) {
             ? self.xhr.responseText
             : self.xhr.response;
         // issue #876: return the http status code if the response parsing fails
-        error.status = self.xhr.status ? self.xhr.status : null;
+        error.status = self.xhr.status || null;
         error.statusCode = error.status; // backwards-compat only
       } else {
         error.rawResponse = null;
@@ -475,7 +476,7 @@ function Request(method, url) {
     if (new_error) {
       new_error.original = error;
       new_error.response = res;
-      new_error.status = res.status;
+      new_error.status = new_error.status || res.status;
       self.callback(new_error, res);
     } else {
       self.callback(null, res);
@@ -515,7 +516,7 @@ mixin(Request.prototype, RequestBase.prototype);
  */
 
 Request.prototype.type = function (type) {
-  this.set('Content-Type', request.types[type] || type);
+  this.set('Content-Type', lookupType(type));
   return this;
 };
 
@@ -540,7 +541,7 @@ Request.prototype.type = function (type) {
  */
 
 Request.prototype.accept = function (type) {
-  this.set('Accept', request.types[type] || type);
+  this.set('Accept', lookupType(type));
   return this;
 };
 
@@ -568,13 +569,16 @@ Request.prototype.auth = function (user, pass, options) {
     };
   }
 
-  const encoder = (string) => {
-    if (typeof btoa === 'function') {
-      return btoa(string);
-    }
+  let { encoder } = options;
+  if (!encoder) {
+    encoder = (string) => {
+      if (typeof btoa === 'function') {
+        return btoa(string);
+      }
 
-    throw new Error('Cannot use basic auth, btoa is not a function');
-  };
+      throw new Error('Cannot use basic auth, btoa is not a function');
+    };
+  }
 
   return this._auth(user, pass, options, encoder);
 };
@@ -788,7 +792,7 @@ Request.prototype._end = function () {
     let status;
     try {
       status = xhr.status;
-    } catch {
+    } catch (err) {
       status = 0;
     }
 
@@ -823,7 +827,7 @@ Request.prototype._end = function () {
           handleProgress.bind(null, 'upload')
         );
       }
-    } catch {
+    } catch (err) {
       // Accessing xhr.upload fails in IE from a web worker, so just pretend it doesn't exist.
       // Reported here:
       // https://connect.microsoft.com/IE/feedback/details/837245/xmlhttprequest-upload-throws-invalid-argument-when-used-from-web-worker-context
@@ -859,9 +863,12 @@ Request.prototype._end = function () {
   ) {
     // serialize stuff
     const contentType = this._header['content-type'];
+    const serializeType = contentType ? contentType.split(';')[0] : '';
     let serialize =
       this._serializer ||
-      request.serialize[contentType ? contentType.split(';')[0] : ''];
+      (hasOwn(request.serialize, serializeType)
+        ? request.serialize[serializeType]
+        : undefined);
     if (!serialize && isJSON(contentType)) {
       serialize = request.serialize['application/json'];
     }
@@ -870,28 +877,54 @@ Request.prototype._end = function () {
   }
 
   // set header fields
-  for (const field in this.header) {
-    if (this.header[field] === null) continue;
+  try {
+    for (const field in this.header) {
+      if (this.header[field] === null) continue;
 
-    if (hasOwn(this.header, field))
-      xhr.setRequestHeader(field, this.header[field]);
+      if (hasOwn(this.header, field))
+        xhr.setRequestHeader(field, this.header[field]);
+    }
+
+    if (this._responseType) {
+      xhr.responseType = this._responseType;
+    }
+
+    // send stuff
+    this.emit('request', this);
+
+    // IE11 xhr.send(undefined) sends 'undefined' string as POST payload (instead of nothing)
+    // We need null here if data is undefined
+    xhr.send(typeof data === 'undefined' ? null : data);
+  } catch (err) {
+    try {
+      xhr.abort();
+    } catch (err) {
+      // ignore
+    }
+
+    return this.callback(err);
   }
-
-  if (this._responseType) {
-    xhr.responseType = this._responseType;
-  }
-
-  // send stuff
-  this.emit('request', this);
-
-  // IE11 xhr.send(undefined) sends 'undefined' string as POST payload (instead of nothing)
-  // We need null here if data is undefined
-  xhr.send(typeof data === 'undefined' ? null : data);
 };
 
-request.agent = () => new Agent();
+// create a Proxy that can instantiate a new Agent without using `new` keyword
+// (for backward compatibility and chaining)
+const proxyAgent = new Proxy(Agent, {
+  apply(target, thisArg, argumentsList) {
+    // eslint-disable-next-line new-cap
+    return new target(...argumentsList);
+  }
+});
+request.agent = proxyAgent;
 
-for (const method of ['GET', 'POST', 'OPTIONS', 'PATCH', 'PUT', 'DELETE']) {
+for (const method of [
+  'GET',
+  'HEAD',
+  'POST',
+  'OPTIONS',
+  'PATCH',
+  'PUT',
+  'DELETE'
+]) {
   Agent.prototype[method.toLowerCase()] = function (url, fn) {
     const request_ = new request.Request(method, url);
     this._setDefaults(request_);
